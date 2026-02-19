@@ -118,7 +118,7 @@ export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team
         <table className="w-full text-xs border-collapse">
           <thead>
             <tr className="text-[var(--color-text-dim)] border-b border-[var(--color-border)]">
-              {['Player', 'MIN', 'PTS', 'FG', '3PT', 'FT', 'REB', 'AST', 'STL', 'BLK', 'TO', '+/-'].map(h => (
+              {['Player', 'MIN', 'PTS', 'FG', '3PT', 'FT', 'OREB', 'DREB', 'REB', 'AST', 'STL', 'BLK', 'TO', '+/-'].map(h => (
                 <th key={h} className="px-2 py-1 text-left">{h}</th>
               ))}
             </tr>
@@ -140,6 +140,8 @@ export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team
                   <td className="px-2 py-1">{fgStr(s.fgMade, s.fgAttempted)}</td>
                   <td className="px-2 py-1">{fgStr(s.threeMade, s.threeAttempted)}</td>
                   <td className="px-2 py-1">{fgStr(s.ftMade, s.ftAttempted)}</td>
+                  <td className="px-2 py-1">{s.offRebounds}</td>
+                  <td className="px-2 py-1">{s.defRebounds}</td>
                   <td className="px-2 py-1">{s.rebounds}</td>
                   <td className="px-2 py-1">{s.assists}</td>
                   <td className="px-2 py-1">{s.steals}</td>
@@ -159,6 +161,8 @@ export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team
               <td className="px-2 py-1">{fgStr(stats.reduce((s, p) => s + p.fgMade, 0), stats.reduce((s, p) => s + p.fgAttempted, 0))}</td>
               <td className="px-2 py-1">{fgStr(stats.reduce((s, p) => s + p.threeMade, 0), stats.reduce((s, p) => s + p.threeAttempted, 0))}</td>
               <td className="px-2 py-1">{fgStr(stats.reduce((s, p) => s + p.ftMade, 0), stats.reduce((s, p) => s + p.ftAttempted, 0))}</td>
+              <td className="px-2 py-1">{stats.reduce((s, p) => s + p.offRebounds, 0)}</td>
+              <td className="px-2 py-1">{stats.reduce((s, p) => s + p.defRebounds, 0)}</td>
               <td className="px-2 py-1">{stats.reduce((s, p) => s + p.rebounds, 0)}</td>
               <td className="px-2 py-1">{stats.reduce((s, p) => s + p.assists, 0)}</td>
               <td className="px-2 py-1">{stats.reduce((s, p) => s + p.steals, 0)}</td>

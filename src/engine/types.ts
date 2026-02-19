@@ -101,6 +101,8 @@ export interface PlayerGameStats {
   ftMade: number;
   ftAttempted: number;
   rebounds: number;
+  offRebounds: number;
+  defRebounds: number;
   assists: number;
   steals: number;
   blocks: number;
@@ -115,6 +117,8 @@ export interface PlayByPlayEntry {
   text: string;
   scoreHome: number;
   scoreAway: number;
+  teamColor?: string;
+  playerName?: string;
 }
 
 export interface QuarterScore {
