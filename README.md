@@ -1,36 +1,46 @@
-# 🏀 Hoopcraft
+# 🏀 HoopCraft
 
-An isometric pixel art basketball simulation/management game for mobile.
+Basketball simulation engine prototype — text-based box scores and play-by-play.
 
-**Football Manager depth × Retro Bowl accessibility × Kairosoft charm.**
+**[Play it live →](https://pybot49.github.io/hoopcraft/)**
 
 ## What is this?
 
-You're the GM and Coach. Draft players, set tactics, manage your roster, and watch games unfold in real-time isometric simulation. Build a dynasty.
+A web-based basketball simulation that validates whether our engine produces realistic NBA-like stats. No graphics — just numbers and narrative play-by-play text.
 
-## Core Features
+Two hardcoded teams (Metro Hawks vs Bay City Wolves) with 5 players each, complete with detailed physical attributes and skill ratings (F through S rank). Each game simulates ~200 possessions across 4 quarters with a 24-second shot clock.
 
-- **Real-time match simulation** — isometric pixel art, watch your tactics play out
-- **5×5 tactical system** — 5 offense × 5 defense types with rock-paper-scissors matchups
-- **Player synergy** — players have affinity to play styles, chemistry matters
-- **Superstar takeover** — momentum system creates natural "Kobe 81 pt" moments
-- **Full management** — draft, trades, training, finances, stadium
-- **Fame system** — All-Star, MVP, Hall of Fame, player legacies
+## Features
+
+- **Seeded RNG** — same seed = same game, every time
+- **Tactical system** — 5 offensive × 5 defensive tactics with a matchup advantage matrix
+- **Detailed box scores** — PTS, FG, 3PT, FT, REB, AST, STL, BLK, TO, +/-
+- **Engaging play-by-play** — reads like a real broadcast
+- **Superstar takeover** — momentum system for star players
+- **Fatigue** — stamina degrades over the game
+
+## Realism Targets
+
+| Stat | Target Range |
+|------|-------------|
+| Team Score | 90-120 |
+| FG% | 42-50% |
+| 3PT% | 30-40% |
+| Rebounds/team | 40-55 |
+| Assists/team | 18-30 |
+| Turnovers/team | 10-18 |
 
 ## Tech Stack
 
-- Unity 2022 LTS (C#)
-- Isometric 2D pixel art
-- Mobile-first (iOS + Android)
+React 19 + Redux Toolkit + TypeScript + Tailwind CSS v4 + Vite
 
-## Status
+## Development
 
-🚧 **Pre-production** — Game Design Document complete, prototyping next.
+```bash
+npm install
+npm run dev
+```
 
-## Docs
+## Game Design Document
 
-- [Game Design Document](./GDD.md) — Full 60+ page GDD with all systems, formulas, and specs
-
-## License
-
-All rights reserved.
+See [GDD.md](./GDD.md) for the full game design document.
