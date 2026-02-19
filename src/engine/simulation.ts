@@ -522,6 +522,77 @@ export function simulateGame(
     });
   }
 
+  // Overtime periods if tied (5 min each)
+  let otPeriod = 0;
+  while (totalHome === totalAway) {
+    otPeriod++;
+    const q = QUARTERS + otPeriod;
+    let clock = 300; // 5 min OT
+    let qHome = 0;
+    let qAway = 0;
+    let homeHasBall = otPeriod % 2 === 1;
+
+    // OT fatigue recovery
+    [...homeTeam.players, ...awayTeam.players].forEach(p => {
+      fatigue[p.id] = Math.min(p.physical.stamina, (fatigue[p.id] || 0) + p.physical.stamina * 0.10);
+    });
+
+    playByPlay.push({
+      quarter: q, time: '5:00',
+      text: `--- OVERTIME ${otPeriod}! ---`,
+      scoreHome: totalHome, scoreAway: totalAway,
+    });
+
+    while (clock > 0) {
+      const ctx: PossessionContext = {
+        offTeam: homeHasBall ? homeTeam : awayTeam,
+        defTeam: homeHasBall ? awayTeam : homeTeam,
+        offTactic: homeHasBall ? homeTacticOff : awayTacticOff,
+        defTactic: homeHasBall ? awayTacticDef : homeTacticDef,
+        offStats: homeHasBall ? homeStats : awayStats,
+        defStats: homeHasBall ? awayStats : homeStats,
+        scoreOff: homeHasBall ? totalHome + qHome : totalAway + qAway,
+        scoreDef: homeHasBall ? totalAway + qAway : totalHome + qHome,
+        quarter: q, clock, rng, playByPlay, isHome: homeHasBall, momentum, fatigue,
+      };
+
+      const result = simulatePossession(ctx);
+
+      if (homeHasBall) {
+        qHome += result.pointsScored;
+      } else {
+        qAway += result.pointsScored;
+      }
+
+      clock -= result.possessionTime;
+
+      if (result.pointsScored > 0) {
+        const scoringStats = homeHasBall ? homeStats : awayStats;
+        const otherStats = homeHasBall ? awayStats : homeStats;
+        scoringStats.forEach(s => s.plusMinus += result.pointsScored);
+        otherStats.forEach(s => s.plusMinus -= result.pointsScored);
+      }
+
+      homeHasBall = !homeHasBall;
+    }
+
+    totalHome += qHome;
+    totalAway += qAway;
+    quarterScores.push({ home: qHome, away: qAway });
+
+    playByPlay.push({
+      quarter: q, time: '0:00',
+      text: `--- End of OT${otPeriod} | ${homeTeam.name} ${totalHome} - ${awayTeam.name} ${totalAway} ---`,
+      scoreHome: totalHome, scoreAway: totalAway,
+    });
+
+    // Safety: max 5 OT periods
+    if (otPeriod >= 5 && totalHome === totalAway) {
+      // Force break tie with a free throw
+      if (rng() < 0.5) totalHome += 1; else totalAway += 1;
+    }
+  }
+
   // Round minutes
   homeStats.forEach(s => s.minutes = Math.round(s.minutes * 10) / 10);
   awayStats.forEach(s => s.minutes = Math.round(s.minutes * 10) / 10);

@@ -1,11 +1,116 @@
-import { PlayerGameStats, Team } from '../engine/types';
+import { useState } from 'react';
+import { Player, PlayerGameStats, Team } from '../engine/types';
 import { skillToGrade } from '../engine/utils';
 
 function fgStr(made: number, att: number) {
   return att > 0 ? `${made}/${att}` : '0/0';
 }
 
+function gradeColor(grade: string): string {
+  switch (grade) {
+    case 'S': return '#ff6b6b';
+    case 'A': return '#ffd93d';
+    case 'B': return '#3fb950';
+    case 'C': return '#58a6ff';
+    case 'D': return '#7d8590';
+    case 'E': return '#484f58';
+    default: return '#30363d';
+  }
+}
+
+function SkillBadge({ name, value }: { name: string; value: number }) {
+  const grade = skillToGrade(value);
+  return (
+    <span className="inline-flex items-center gap-1 mr-2 mb-1 text-[10px]">
+      <span className="text-[var(--color-text-dim)]">{name}</span>
+      <span className="font-bold px-1 rounded" style={{ color: gradeColor(grade), border: `1px solid ${gradeColor(grade)}` }}>{grade}</span>
+    </span>
+  );
+}
+
+function PlayerModal({ player, onClose }: { player: Player; onClose: () => void }) {
+  const p = player;
+  return (
+    <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
+      <div className="bg-[#0d1117] border border-[var(--color-border)] rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto p-4" onClick={e => e.stopPropagation()}>
+        <div className="flex justify-between items-start mb-3">
+          <div>
+            <h3 className="text-lg font-bold text-[var(--color-accent)]">
+              {p.isSuperstar && <span className="text-yellow-400 mr-1">⭐</span>}
+              {p.name}
+            </h3>
+            <p className="text-xs text-[var(--color-text-dim)]">{p.position} · {p.archetype}</p>
+          </div>
+          <button onClick={onClose} className="text-[var(--color-text-dim)] hover:text-white text-xl">✕</button>
+        </div>
+
+        <div className="mb-3">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">Physical</h4>
+          <div className="grid grid-cols-2 gap-x-4 gap-y-0.5 text-xs">
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Height</span><span>{p.physical.height} cm</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Wingspan</span><span>{p.physical.wingspan} cm</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Weight</span><span>{p.physical.weight} kg</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Speed</span><span>{p.physical.speed}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Acceleration</span><span>{p.physical.acceleration}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Vertical</span><span>{p.physical.vertical}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Strength</span><span>{p.physical.strength}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Stamina</span><span>{p.physical.stamina}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Agility</span><span>{p.physical.agility}</span></div>
+            <div className="flex justify-between"><span className="text-[var(--color-text-dim)]">Hand Size</span><span>{p.physical.hand_size}</span></div>
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🎯 Shooting</h4>
+          <div className="flex flex-wrap">
+            {Object.entries(p.skills.shooting).map(([k, v]) => (
+              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🏀 Finishing</h4>
+          <div className="flex flex-wrap">
+            {Object.entries(p.skills.finishing).map(([k, v]) => (
+              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🎭 Playmaking</h4>
+          <div className="flex flex-wrap">
+            {Object.entries(p.skills.playmaking).map(([k, v]) => (
+              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🛡️ Defense</h4>
+          <div className="flex flex-wrap">
+            {Object.entries(p.skills.defense).map(([k, v]) => (
+              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+            ))}
+          </div>
+        </div>
+
+        <div className="mb-2">
+          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">💪 Athletic</h4>
+          <div className="flex flex-wrap">
+            {Object.entries(p.skills.athletic).map(([k, v]) => (
+              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team }) {
+  const [selectedPlayer, setSelectedPlayer] = useState<Player | null>(null);
   return (
     <div className="mb-6">
       <h3 className="text-lg font-bold mb-2" style={{ color: team.color }}>{team.name}</h3>
@@ -24,8 +129,10 @@ export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team
               return (
                 <tr key={s.playerId} className="border-b border-[var(--color-border)] hover:bg-[var(--color-surface)]">
                   <td className="px-2 py-1 whitespace-nowrap">
-                    {player.isSuperstar && <span className="text-yellow-400 mr-1">⭐</span>}
-                    {player.name}
+                    <button onClick={() => setSelectedPlayer(player)} className="hover:text-[var(--color-accent)] hover:underline cursor-pointer text-left">
+                      {player.isSuperstar && <span className="text-yellow-400 mr-1">⭐</span>}
+                      {player.name}
+                    </button>
                     <span className="text-[var(--color-text-dim)] ml-1 text-[10px]">{player.position}</span>
                   </td>
                   <td className="px-2 py-1">{s.minutes.toFixed(1)}</td>
@@ -62,6 +169,7 @@ export function BoxScore({ stats, team }: { stats: PlayerGameStats[]; team: Team
           </tbody>
         </table>
       </div>
+      {selectedPlayer && <PlayerModal player={selectedPlayer} onClose={() => setSelectedPlayer(null)} />}
     </div>
   );
 }
