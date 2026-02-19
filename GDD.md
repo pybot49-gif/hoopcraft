@@ -1,6 +1,6 @@
 # 🏀 Courtside Dynasty — Game Design Document
 
-**Version:** 1.0  
+**Version:** 1.1  
 **Date:** 2026-02-19  
 **Platform:** iOS / Android  
 **Engine:** Unity 2022 LTS (C#)  
@@ -17,7 +17,12 @@
 3. [Tactical System (五行相剋)](#3-tactical-system)
 4. [Player Synergy & Chemistry](#4-player-synergy--chemistry)
 5. [Pick and Roll Sub-System](#5-pick-and-roll-sub-system)
-6. [Player Attributes](#6-player-attributes)
+6. [Player Attributes — Two-Layer System](#6-player-attributes--two-layer-system)
+   - 6A. [Skill Trees & Prerequisites](#6a-skill-trees--prerequisites)
+   - 6B. [Skill Visual Effects by Level](#6b-skill-visual-effects-by-level)
+   - 6C. [Skill Learning & EXP System](#6c-skill-learning--exp-system)
+   - 6D. [Player Archetypes & Growth Paths](#6d-player-archetypes--growth-paths)
+   - 6E. [Design Principles](#6e-design-principles)
 7. [Traits System](#7-traits-system)
 8. [Superstar Takeover](#8-superstar-takeover)
 9. [Roster Management](#9-roster-management)
@@ -622,103 +627,407 @@ bool ShouldPop(Player screener, PnRStyle style)
 
 ---
 
-## 6. Player Attributes
+## 6. Player Attributes — Two-Layer System
 
-### 6.1 Attribute Categories
+> **Design Philosophy:** Players have "hardware" (physical body) and "software" (learned skills). Physical attributes are your body — mostly set at birth, peaking in your mid-20s, declining with age. Skills are your craft — learned through training, games, and mentorship, and they NEVER decline. This creates the realistic "old crafty veteran" archetype: slow legs but S-rank shooting.
 
-**25 total attributes**, rated 25-99.
+### 6.1 Layer 1: Physical Attributes (天生體質)
 
-#### Physical (6)
+Physical attributes are the player's "hardware" — mostly determined at draft, slow to change through training.
 
-| Attribute | Abbr | Description | Affects |
-|-----------|------|-------------|---------|
-| `speed` | SPD | Straight-line speed | Fast break, transition, blowby |
-| `acceleration` | ACC | Burst quickness | First step, defensive recovery |
-| `strength` | STR | Physical power | Post defense, screen quality, rebounding |
-| `vertical` | VER | Jumping ability | Blocks, dunks, rebounds, alley-oops |
-| `stamina` | STA | Endurance | Fatigue rate, minutes capacity |
-| `height` | HGT | Height in cm (170-220) | Rebounding, blocks, contest, mismatches |
+| Attribute | Range | Description |
+|-----------|-------|-------------|
+| `HEIGHT` | 175-220 cm | Fixed at creation; affects sprites, block range, release point |
+| `WINGSPAN` | HEIGHT + 5-15 cm | Fixed at creation; affects steal/block reach, shot contest |
+| `WEIGHT` | 75-130 kg | Affects contact plays, post-ups, screens |
+| `SPEED` | 25-99 | Straight-line running speed |
+| `ACCELERATION` | 25-99 | Burst/first step quickness |
+| `VERTICAL` | 25-99 | Vertical leap in cm equivalent |
+| `STRENGTH` | 25-99 | Contact/physicality power |
+| `STAMINA` | 25-99 | Endurance, minutes capacity |
+| `AGILITY` | 25-99 | Change of direction, lateral quickness |
+| `HAND_SIZE` | 25-99 | Ball control, one-hand grabs, palming |
 
-> **Height** is special: it's generated at player creation and doesn't change. Stored as cm. Converted to a 25-99 scale for calculations: `heightRating = (height_cm - 170) / 50 * 74 + 25`.
+#### Physical → Visual Impact
 
-#### Offense (8)
+Physical attributes directly affect what you see on court:
 
-| Attribute | Abbr | Description |
-|-----------|------|-------------|
-| `shooting_close` | SCL | Layups, floaters, close-range |
-| `shooting_mid` | SMD | Mid-range jump shots |
-| `shooting_3pt` | S3P | Three-point shooting |
-| `free_throw` | SFT | Free throw accuracy |
-| `finishing` | FIN | Dunks, contested finishes at rim |
-| `ball_handling` | BHD | Dribbling, reducing turnovers |
-| `passing` | PAS | Pass accuracy, assist creation |
-| `offensive_iq` | OIQ | Play selection, off-ball movement, reading defense |
+| Attribute | Visual Effect |
+|-----------|-------------|
+| HEIGHT + WINGSPAN | Taller sprites, longer block range, higher release point on shots |
+| VERTICAL | Determines dunk animations (low = layup only, high = spectacular dunks), rebound jump height |
+| SPEED | Actual sprite movement speed difference, fast break advantage |
+| STRENGTH | Post-up pushing animations, screen quality, box-out animations (strong push weak aside) |
+| AGILITY | Crossover animation speed, defensive slide speed |
 
-#### Defense (5)
+#### Physical Aging Curve
 
-| Attribute | Abbr | Description |
-|-----------|------|-------------|
-| `perimeter_defense` | PDf | On-ball D vs guards/wings |
-| `interior_defense` | IDf | Post defense, paint protection |
-| `steal` | STL | Active hands, passing lane reads |
-| `block` | BLK | Shot-blocking ability |
-| `defensive_iq` | DIQ | Help defense, rotations, positioning |
+Physical attributes follow a biological aging curve:
 
-#### Intangibles (6)
+| Age Range | Annual Change | Description |
+|-----------|--------------|-------------|
+| 19-22 | +1 to +3/year | Slowly improving, body maturing |
+| 23-27 | Stable | Peak physical years |
+| 28-31 | -1 to -2/year | Slow decline begins |
+| 32-35 | -2 to -4/year | Noticeable decline |
+| 36+ | -3 to -6/year | Steep decline |
 
-| Attribute | Abbr | Description |
-|-----------|------|-------------|
-| `clutch` | CLT | Performance in high-pressure moments |
-| `consistency` | CON | Variance in game-to-game performance |
-| `aggression` | AGG | Tendency to attack/gamble (double-edged) |
-| `foul_drawing` | FDR | Ability to draw fouls |
-| `leadership` | LDR | Morale boost to teammates, locker room presence |
+**Decline priority** (first to go → last):
+1. `SPEED`, `ACCELERATION`, `VERTICAL` (explosive attributes fade first)
+2. `STAMINA`, `AGILITY`
+3. `STRENGTH` (declines slowly)
+4. `HEIGHT`, `WINGSPAN`, `HAND_SIZE` (never change)
 
-### 6.2 Overall Rating Calculation
+### 6.2 Layer 2: Skills (RPG Skill System)
 
-```csharp
-// Position-weighted overall
-public int CalculateOverall(Player p)
-{
-    float[] weights = GetPositionWeights(p.Position);
-    // PG weights: ball_handling=1.2, passing=1.1, speed=1.0, shooting_3pt=0.9, perimeter_defense=0.8...
-    // C weights: interior_defense=1.2, strength=1.1, height=1.0, rebounding(derived)=1.0, finishing=0.9...
-    
-    float weightedSum = 0f;
-    float totalWeight = 0f;
-    for (int i = 0; i < NUM_ATTRIBUTES; i++)
-    {
-        weightedSum += p.Attributes[i] * weights[i];
-        totalWeight += weights[i];
-    }
-    return Mathf.RoundToInt(weightedSum / totalWeight);
-}
+Skills are LEARNED — through training, playing, mentoring, and items. They represent basketball craft and knowledge. **Skills NEVER decline with age.**
+
+#### Skill Levels
+
+| Level | Value | Effect |
+|-------|-------|--------|
+| **F** | 0-14 | Almost can't do it, will fumble |
+| **E** | 15-29 | Beginner, occasional success |
+| **D** | 30-44 | Basic, functional |
+| **C** | 45-59 | Competent, reliable |
+| **B** | 60-74 | Excellent, can rely on this |
+| **A** | 75-89 | Master, signature move |
+| **S** | 90-100 | Grandmaster, creates variations |
+
+#### Final Ability = Physical Base × Skill Modifier
+
+The actual in-game ability is calculated by combining physical attributes with skill levels. Neither alone is sufficient.
+
+**Example: Dunking**
+
+Physical base from VERTICAL:
+
+| Vertical | Physical Base | Notes |
+|----------|-------------|-------|
+| <50 | CANNOT DUNK | Physical gate — no amount of skill helps |
+| 50-65 | 0.40 | Barely gets up |
+| 66-80 | 0.65 | Solid leaper |
+| 81-95 | 0.80 | Athletic |
+| 96+ | 0.92 | Elite vertical |
+
+Skill modifier from Dunk skill level:
+
+| Level | Modifier |
+|-------|----------|
+| F | 0.30 |
+| E | 0.50 |
+| D | 0.65 |
+| C | 0.78 |
+| B | 0.88 |
+| A | 0.95 |
+| S | 1.05 |
+
+**Calculation examples:**
+- Vertical 85 + Dunk A = 0.80 × 0.95 = **76% success** (before defense) — reliable dunker
+- Vertical 60 + Dunk C = 0.40 × 0.78 = **31%** — struggles, often blocked
+- Vertical 95 + Dunk S = 0.92 × 1.05 = **97%** — near-automatic, fancy dunks
+
+> **Key insight:** A 35-year-old with declining SPEED but S-rank shooting is still deadly from range (like Ray Allen's final years). Skills are permanent — only the body fades.
+
+#### Intangible Attributes
+
+These mental/personality attributes exist alongside skills and physical:
+
+| Attribute | Range | Description |
+|-----------|-------|-------------|
+| `Basketball IQ` | 25-99 | Play reading, off-ball movement, decision making |
+| `Clutch` | 25-99 | Performance in high-pressure moments |
+| `Consistency` | 25-99 | Variance in game-to-game performance |
+| `Aggression` | 25-99 | Tendency to attack/gamble (double-edged) |
+| `Leadership` | 25-99 | Morale boost to teammates, locker room presence |
+
+---
+
+## 6A. Skill Trees & Prerequisites
+
+Skills are organized into five trees. Each tree has base skills (available from the start) and advanced skills that must be unlocked by meeting prerequisites — skill levels, physical gates, or both.
+
+### 🎯 Shooting Tree
+
+**Base skills:** Free Throw, Mid-Range, Close Shot
+
+```
+Free Throw ──────────────────────── Free Throw Master (FT C)
+                                    
+Mid-Range ──┬── Three-Point (Mid C) ──┬── Deep Three (3PT B)
+            │                         ├── Stepback (3PT B + Ball Handling B)
+            │                         └── Catch & Shoot (3PT B)
+            │
+            ├── Pull-Up (Mid C + Ball Handling C)
+            │
+            └── Fadeaway (Mid B + Close Shot B + Post Move C)
+
+Close Shot ──┬── Hook Shot (Close B + Post Move C + HEIGHT >200cm)
+             └── Turnaround (Close B + Post Move C + AGILITY 70+)
 ```
 
-**Position weight profiles:**
+| Skill | Prerequisites |
+|-------|--------------|
+| Three-Point | Mid-Range C |
+| Pull-Up | Mid-Range C + Ball Handling C |
+| Fadeaway | Mid-Range B + Close Shot B + Post Move C |
+| Deep Three | Three-Point B |
+| Stepback | Three-Point B + Ball Handling B |
+| Catch & Shoot | Three-Point B |
+| Hook Shot | Close Shot B + Post Move C + HEIGHT >200cm |
+| Turnaround | Close Shot B + Post Move C + AGILITY 70+ |
+| Free Throw Master | Free Throw C |
 
-| Attribute | PG | SG | SF | PF | C |
-|-----------|-----|-----|-----|-----|-----|
-| speed | 1.0 | 0.9 | 0.8 | 0.6 | 0.4 |
-| strength | 0.4 | 0.5 | 0.7 | 0.9 | 1.0 |
-| shooting_3pt | 0.9 | 1.1 | 0.8 | 0.6 | 0.3 |
-| finishing | 0.5 | 0.6 | 0.7 | 0.9 | 1.1 |
-| ball_handling | 1.2 | 0.9 | 0.6 | 0.4 | 0.2 |
-| passing | 1.1 | 0.7 | 0.7 | 0.6 | 0.5 |
-| perimeter_defense | 0.9 | 1.0 | 0.9 | 0.6 | 0.3 |
-| interior_defense | 0.2 | 0.3 | 0.5 | 0.9 | 1.2 |
-| block | 0.2 | 0.3 | 0.5 | 0.8 | 1.1 |
+### 🏀 Finishing Tree
 
-### 6.3 Stat Ranges by Player Tier
+**Base skill:** Layup
 
-| Tier | Overall | Example | Top Stat | Lowest Stat |
-|------|---------|---------|----------|-------------|
-| Superstar | 90-99 | LeBron, Curry | 95-99 | 45-60 |
-| All-Star | 82-89 | Jimmy Butler | 85-92 | 40-55 |
-| Starter | 72-81 | Solid starter | 78-85 | 35-50 |
-| Rotation | 62-71 | 6th-8th man | 70-80 | 30-45 |
-| Bench | 50-61 | End of bench | 60-72 | 25-40 |
-| G-League | 35-49 | Barely roster | 50-65 | 25-35 |
+```
+Layup ──┬── Floater (Layup D + Mid-Range D)
+        │
+        ├── Euro Step (Layup C + AGILITY 65+) ── Spin Layup (Euro B + Ball Handling B)
+        │
+        ├── Reverse Layup (Layup C + AGILITY 60+) ── Finger Roll (Rev B + AGILITY 70+)
+        │
+        └── Dunk (Layup C + VERTICAL 60+) ──┬── Alley-Oop (Dunk B + Off-Ball Movement C)
+              ⚠️ PHYSICAL GATE!              ├── Poster Dunk (Dunk B + STR 75+ + VERT 75+)
+                                              └── Contact Dunk (Dunk A + STR 80+ + VERT 80+)
+```
+
+| Skill | Prerequisites |
+|-------|--------------|
+| Floater | Layup D + Mid-Range D |
+| Euro Step | Layup C + AGILITY 65+ |
+| Reverse Layup | Layup C + AGILITY 60+ |
+| Spin Layup | Euro Step B + Ball Handling B |
+| Finger Roll | Reverse Layup B + AGILITY 70+ |
+| Dunk | Layup C + VERTICAL 60+ ⚠️ |
+| Alley-Oop | Dunk B + Off-Ball Movement C |
+| Poster Dunk | Dunk B + STRENGTH 75+ + VERTICAL 75+ |
+| Contact Dunk | Dunk A + STRENGTH 80+ + VERTICAL 80+ |
+
+### 🎭 Playmaking Tree
+
+**Base skills:** Passing, Ball Handling
+
+```
+Passing ──┬── Bounce Pass (Passing D)
+          ├── Court Vision (Passing C) ──┬── PnR Read (CV C + Passing C + BH C) ── PnR Master (PnR B + CV B)
+          │                              └── No-Look Pass (CV B + Passing B) ── Lob Pass (NL B + Passing A)
+          │
+Ball Handling ──┬── Crossover (BH C + AGILITY 65+) ── Hesitation (BH A + Cross B)
+                │                                             │
+                │                                      Ankle Breaker (Cross A + AGILITY 80+)
+                │
+                └── Behind-the-Back (BH B + AGILITY 70+)
+```
+
+| Skill | Prerequisites |
+|-------|--------------|
+| Bounce Pass | Passing D |
+| Court Vision | Passing C |
+| PnR Read | Passing C + Court Vision C + Ball Handling C |
+| PnR Master | PnR Read B + Court Vision B |
+| No-Look Pass | Court Vision B + Passing B |
+| Lob Pass | No-Look Pass B + Passing A |
+| Crossover | Ball Handling C + AGILITY 65+ |
+| Behind-the-Back | Ball Handling B + AGILITY 70+ |
+| Hesitation | Ball Handling A + Crossover B |
+| Ankle Breaker | Crossover A + AGILITY 80+ |
+
+### 🛡️ Defense Tree
+
+**Base skills:** Perimeter Defense, Interior Defense
+
+```
+Perimeter D ──┬── Steal (Peri D + SPEED 70+) ── Passing Lane Thief (Steal B + Court Vision C)
+              ├── Shot Contest (Peri C + WINGSPAN avg+)
+              │       └── Lockdown Defender (SC B + Peri B + AGILITY 75+ + IQ 70+)
+              └── Charge Drawing (Peri C + Int D D + IQ 65+)
+
+Interior D ──┬── Block (Int C + VERTICAL 65+ + WINGSPAN avg+) ──┬── Rim Protector (Block A + Int A + HEIGHT >200)
+             │                                                    ├── Chase-Down Block (Block B + SPEED 75+ + VERT 75+)
+             │                                                    └── Weak-Side Block (Block B + Court Vision C + WINGSPAN long)
+             └── Box Out (Int D + STRENGTH 65+)
+```
+
+| Skill | Prerequisites |
+|-------|--------------|
+| Steal | Perimeter Defense D + SPEED 70+ |
+| Shot Contest | Perimeter Defense C + WINGSPAN avg+ |
+| Lockdown Defender | Shot Contest B + Perimeter Defense B + AGILITY 75+ + Basketball IQ 70+ |
+| Passing Lane Thief | Steal B + Court Vision C |
+| Charge Drawing | Perimeter Defense C + Interior Defense D + Basketball IQ 65+ |
+| Block | Interior Defense C + VERTICAL 65+ + WINGSPAN avg+ |
+| Box Out | Interior Defense D + STRENGTH 65+ |
+| Rim Protector | Block A + Interior Defense A + HEIGHT >200cm |
+| Chase-Down Block | Block B + SPEED 75+ + VERTICAL 75+ |
+| Weak-Side Block | Block B + Court Vision C + WINGSPAN long |
+
+### 💪 Athletic Tree
+
+**Base skills:** Off-Ball Movement, Rebounding, Hustle, Conditioning
+
+```
+Off-Ball Movement ── Cutting (Off-Ball C + SPEED 65+)
+
+Rebounding ──┬── Offensive Rebounding (Reb C + VERTICAL 65+ + AGGRESSION 70+)
+             └── Defensive Rebounding (Reb D + Box Out D + STRENGTH 60+)
+
+Hustle ── Dive for Loose Ball (Hustle B + AGILITY 65+)
+
+Conditioning ── Iron Man (Conditioning B + STAMINA 75+)
+
+STRENGTH 65+ ── Screen Setting ── Brick Wall (Screen B + STRENGTH 80+)
+```
+
+| Skill | Prerequisites |
+|-------|--------------|
+| Cutting | Off-Ball Movement C + SPEED 65+ |
+| Screen Setting | STRENGTH 65+ |
+| Brick Wall | Screen Setting B + STRENGTH 80+ |
+| Offensive Rebounding | Rebounding C + VERTICAL 65+ + AGGRESSION 70+ |
+| Defensive Rebounding | Rebounding D + Box Out D + STRENGTH 60+ |
+| Dive for Loose Ball | Hustle B + AGILITY 65+ |
+| Iron Man | Conditioning B + STAMINA 75+ |
+
+---
+
+## 6B. Skill Visual Effects by Level
+
+Skill levels directly affect what animations play on court. Higher skill = flashier, more effective-looking moves.
+
+| Skill | F-D | C-B | A | S |
+|-------|-----|-----|---|---|
+| **Layup** | Basic form, sometimes fumbles | Stable with spin | Fancy circus shots | Signature moves, slow-mo highlight |
+| **Crossover** | Slow, basic | Fluid motion | Killer crossover, defender visibly shaken | Ankle breaker, defender falls animation |
+| **Three-Point** | Hesitant form, low arc | Standard jumper | Quick release, high arc | Logo shot unlocked, turn-away animation |
+| **Block** | Occasional swat | Reliable | Chase-down blocks | Sends ball to crowd + screen shake |
+| **Dunk** | — | — | — | — |
+
+**Dunk animations by level:**
+
+| Level | Animation |
+|-------|----------|
+| E | Basic two-hand dunk |
+| D | One-hand dunk |
+| C | Tomahawk |
+| B | Windmill / 360 |
+| A | Between-the-legs |
+| S | Custom signature dunk |
+
+---
+
+## 6C. Skill Learning & EXP System
+
+### 5 Ways to Gain Skill EXP
+
+#### 1. Training (Daily Focus)
+
+Pick 1-2 focus skills per training session. Gain **+15-40 EXP** per session, affected by Basketball IQ:
+- IQ 40: ×0.7 training efficiency
+- IQ 60: ×1.0
+- IQ 80: ×1.3
+- IQ 99: ×1.5
+
+#### 2. Playing (Game Experience)
+
+Skills actively used in games earn EXP:
+- **Success** (made shot, completed pass, block, etc.): **+3 EXP**
+- **Failure** (missed shot, turnover): **+1 EXP** (you still learn from mistakes)
+- **Clutch moment** (last 2 min, close game): **+8 EXP**
+
+#### 3. Mentoring (Veteran → Rookie)
+
+A veteran with A or S rank in a skill can mentor a younger player:
+- Mentee gains **1.5× EXP** on that skill during training
+- Requires both players on the same team
+- Mentor must have A or S rank in the specific skill
+
+#### 4. Items & Equipment (RPG Element)
+
+| Category | Item | Effect |
+|----------|------|--------|
+| **Training Gear** | Shooting Sleeve | +10% shooting tree EXP |
+| | Weighted Vest | +15% athletic tree EXP |
+| | Ball Handling Gloves | +10% playmaking tree EXP |
+| **Teaching Items** | Film Study Session | +50 EXP to one skill (consumable) |
+| | Training Camp Pass | Train 3 skills at once (instead of 1-2) |
+| **Rare Items** (achievement rewards) | MJ's Sneakers | Fadeaway +1 level instantly |
+| | Magic's Playbook | All Playmaking skills +20 EXP |
+
+#### 5. Random Events
+
+Narrative events that grant bonus EXP:
+- "Player went to pickup games" → Hustle +1 level
+- "Trained with legend during off-season" → Random skill +EXP
+- "Watched film obsessively" → Basketball IQ +2, Court Vision +30 EXP
+- "Summer league breakout" → Primary skill tree +50 EXP
+
+### EXP Requirements
+
+| Upgrade | EXP Needed | Cumulative | Approximate Games |
+|---------|-----------|-----------|-------------------|
+| F → E | 100 | 100 | ~5-10 games |
+| E → D | 200 | 300 | ~10-20 games |
+| D → C | 300 | 600 | ~15-25 games |
+| C → B | 500 | 1,100 | ~25-40 games |
+| B → A | 800 | 1,900 | ~40-65 games |
+| A → S | 1,300 | 3,200 | ~65-100 games |
+
+> **Pacing:** F→E takes ~5-10 games (quick, feels rewarding — early dopamine hit). A→S takes ~65-100 games (full season commitment, meaningful achievement).
+
+---
+
+## 6D. Player Archetypes & Growth Paths
+
+The skill tree system naturally creates distinct player archetypes based on which trees they invest in:
+
+### 🎯 Sharpshooter
+**Path:** Free Throw → Mid-Range C → Three-Point → Catch & Shoot, Deep Three, Stepback
+
+A pure shooter who builds from fundamentals. Mid-range mastery (C) is required before unlocking three-point range — realistic progression. Late-career sharpshooters with declining speed but S-rank shooting remain elite spot-up threats.
+
+### 🏀 Slasher / Dunker
+**Path:** Layup C → Euro Step, Reverse Layup → Dunk → Alley-Oop, Poster Dunk, Contact Dunk
+
+Athletic finishers who live at the rim. Requires high VERTICAL and STRENGTH physical attributes to unlock the explosive dunk skills. Most physically dependent archetype — declines hardest with age.
+
+### 🎭 Floor General
+**Path:** Passing → Ball Handling → Crossover → Court Vision → PnR Read → PnR Master, No-Look Pass, Lob Pass
+
+The cerebral point guard. Slow to build (many prerequisite chains) but transforms an entire offense. PnR Master + Court Vision S makes a player deadly even with average physical tools.
+
+### 🏋️ Paint Beast
+**Path:** Close Shot → Post Move → Interior Defense → Block → Rim Protector, Hook Shot
+
+Dominant big man who controls the paint on both ends. Hook Shot requires HEIGHT >200cm (physical gate), making this archetype exclusive to true centers.
+
+### 🛡️ Two-Way Wing
+**Path:** Split between Shooting tree + Defense tree
+
+Takes longer to develop because EXP is split across two trees. A Two-Way Wing at age 25 might have B-rank shooting and B-rank defense, while a pure shooter would have A or S-rank shooting. The versatility tax is real — making two-way players genuinely rare and valuable.
+
+### 👑 LeBron-type (All-Rounder)
+**Path:** Multiple trees simultaneously over 10+ seasons
+
+The rarest archetype. Needs elite physical attributes AND investment across 3-4 skill trees. At the normal EXP rate, filling multiple trees to A/S rank requires 10+ seasons of play. These generational talents emerge organically through the system — you can't cheese your way into one.
+
+---
+
+## 6E. Design Principles
+
+Key design decisions and their rationale:
+
+| Principle | Implementation | Why It Matters |
+|-----------|---------------|----------------|
+| **Mid-range before three** | Three-Point requires Mid-Range C | Realistic — good shooters build from closer range outward |
+| **Close range is hard** | Needs Fadeaway/Turnaround to score efficiently inside | Close shots are contested — raw close shot skill alone isn't enough |
+| **Physical gates** | Hook Shot needs HEIGHT >200, Ankle Breaker needs AGILITY 80+ | Prevents unrealistic builds (short hook shooters, slow ankle breakers) |
+| **Skills don't decline** | Only physical attributes age | Creates "old crafty veteran" archetype — realistic and fun |
+| **Generalists are rare** | Multiple trees = double the time investment | Makes versatile players genuinely valuable — LeBron-types are earned |
+| **Fast early, slow late** | F→E: 5-10 games; A→S: full season | Quick early dopamine + long-term goals = engagement at every stage |
+| **Physical × Skill** | Neither alone is sufficient | Athletic freak with no skill = raw potential; skilled veteran with no body = limited ceiling |
 
 ---
 
@@ -1077,89 +1386,116 @@ AI teams will:
 
 ## 12. Training & Development
 
+> **Note:** Training now operates on the two-layer attribute system (see Section 6). Physical attributes train slowly with age-based diminishing returns. Skills gain EXP toward level-ups through the skill tree system (see Section 6C).
+
 ### 12.1 Training System
 
-Between games, allocate training focus:
+Between games, allocate training focus across both layers:
 
-| Focus Area | Attributes Trained | Sessions/Week |
-|-----------|-------------------|---------------|
-| Shooting | shooting_close, shooting_mid, shooting_3pt, free_throw | 3 |
-| Ball Skills | ball_handling, passing, offensive_iq | 3 |
-| Defense | perimeter_defense, interior_defense, steal, block, defensive_iq | 3 |
-| Physical | speed, acceleration, strength, vertical, stamina | 2 |
-| Scrimmage | All attributes (minor gains), +chemistry | 2 |
+| Focus Area | What Trains | Sessions/Week |
+|-----------|------------|---------------|
+| **Shooting Skills** | Skill EXP: Free Throw, Mid-Range, Close Shot, Three-Point, and unlocked shooting skills | 3 |
+| **Ball Skills** | Skill EXP: Passing, Ball Handling, and unlocked playmaking skills | 3 |
+| **Defense Skills** | Skill EXP: Perimeter Defense, Interior Defense, and unlocked defense skills | 3 |
+| **Physical Training** | Physical attributes: Speed, Acceleration, Strength, Vertical, Stamina, Agility | 2 |
+| **Scrimmage** | Minor EXP to all active skills + chemistry building | 2 |
+| **Skill Focus** | Pick 1-2 specific skills for concentrated EXP (+15-40 per session) | 2 |
 
-### 12.2 Training Gains
+### 12.2 Physical Training Gains
+
+Physical attributes are hard to change — especially as players age:
 
 ```csharp
-float CalculateTrainingGain(Player p, AttributeType attr, TrainingFocus focus)
+float CalculatePhysicalTrainingGain(Player p, PhysicalAttribute attr)
 {
     float baseGain = 0.15f; // Per session
     
-    // Age modifier
+    // Age modifier — physical development window is narrow
     float ageMod = p.Age switch {
-        <= 22 => 1.5f,   // Young players grow fast
-        <= 25 => 1.2f,   // Prime development
-        <= 28 => 1.0f,   // Peak years
-        <= 31 => 0.6f,   // Declining development
-        <= 34 => 0.3f,   // Minimal gains
-        _     => 0.1f,   // Veteran
+        <= 22 => 1.5f,   // Body still developing
+        <= 25 => 1.0f,   // Can still improve
+        <= 28 => 0.5f,   // Maintenance mode
+        <= 31 => 0.2f,   // Fighting decline
+        _     => 0.05f,  // Barely moves the needle
     };
     
-    // Diminishing returns: harder to improve high stats
-    float dimReturns = 1.0f - (p.GetAttribute(attr) / 100f) * 0.7f;
-    // Stat at 90 → 0.37 multiplier. Stat at 50 → 0.65 multiplier.
+    // Diminishing returns
+    float dimReturns = 1.0f - (p.GetPhysical(attr) / 100f) * 0.7f;
     
-    // Potential ceiling
-    if (p.GetAttribute(attr) >= p.Potential)
-        dimReturns *= 0.1f; // Almost impossible to exceed potential
+    // Physical potential ceiling
+    if (p.GetPhysical(attr) >= p.PhysicalPotential[attr])
+        dimReturns *= 0.1f;
     
     return baseGain * ageMod * dimReturns;
 }
 ```
 
-### 12.3 Off-Season Training Camp
+### 12.3 Skill EXP Training
 
-- 8 weeks of intensive training (3 sessions/week = 24 sessions)
-- Can focus on 2 areas per player
-- Young players (≤23) gain ~2-5 overall points per off-season
-- Peak players (24-30) gain ~0-2 points
-- Veterans (31+) typically decline 1-3 points per season
+Skill training follows the EXP system from Section 6C:
 
-### 12.4 Natural Development & Decline
+```csharp
+float CalculateSkillTrainingEXP(Player p, Skill skill)
+{
+    float baseEXP = Random.Range(15f, 40f); // Per session
+    
+    // Basketball IQ multiplier
+    float iqMod = 0.5f + (p.BasketballIQ / 100f); // IQ 40→0.9, IQ 80→1.3, IQ 99→1.5
+    
+    // Mentoring bonus (if mentor assigned with A/S rank in this skill)
+    float mentorMod = HasMentor(p, skill) ? 1.5f : 1.0f;
+    
+    // Equipment bonus
+    float equipMod = GetEquipmentBonus(p, skill); // e.g., Shooting Sleeve → 1.1 for shooting skills
+    
+    // No age penalty! Skills don't care about age.
+    // A 35-year-old learns just as fast as a 22-year-old.
+    
+    return baseEXP * iqMod * mentorMod * equipMod;
+}
+```
+
+> **Key difference from old system:** Skill training has NO age penalty. A 35-year-old veteran can still learn new skills (S-rank shooting, etc.). Only physical training is age-gated.
+
+### 12.4 Off-Season Training Camp
+
+- 8 weeks of intensive training (3 sessions/week = **24 sessions**)
+- Can focus on **2 skill trees** + **1 physical area** per player
+- Skill EXP: ~360-960 total EXP per off-season (enough for 1-2 level-ups)
+- Physical: Young players (≤23) gain +1-3 physical points; veterans maintain or slow decline
+- **Off-season items** (Film Study Session, Training Camp Pass) are best used here
+
+### 12.5 Natural Development & Decline
 
 ```csharp
 void ApplySeasonalDevelopment(Player p)
 {
-    if (p.Age <= 25)
-    {
-        // Growth toward potential
-        float growthRate = (p.Potential - p.Overall) * 0.15f;
-        // Randomly distribute growth across attributes
-        DistributeGrowth(p, growthRate);
-    }
-    else if (p.Age >= 30)
-    {
-        // Decline
-        float declineRate = (p.Age - 29) * 0.8f; // 30→0.8, 35→4.8
-        // Physical stats decline first, then shooting
-        ApplyDecline(p, declineRate);
-    }
+    // PHYSICAL: follows aging curve (Section 6.1)
+    ApplyPhysicalAging(p); // +1 to +3 if young, -1 to -6 if old
     
-    // Age up
+    // SKILLS: never decline, but no free growth either
+    // Skills only improve through EXP (training, games, mentoring, items)
+    // This means veterans keep ALL their learned skills forever
+    
+    // INTANGIBLES: Basketball IQ slowly improves with experience
+    if (p.GamesPlayed > 0)
+        p.BasketballIQ = Mathf.Min(99, p.BasketballIQ + Random.Range(0, 2));
+    
     p.Age++;
 }
 ```
 
-### 12.5 Decline Priority
+### 12.6 Decline — Physical Only
 
-Physical stats decline first, IQ declines last:
-1. `speed`, `acceleration`, `vertical` (first to go)
-2. `stamina`, `strength`
-3. `shooting_close`, `finishing`
-4. `perimeter_defense`
-5. `shooting_mid`, `shooting_3pt` (shooters age gracefully)
-6. `offensive_iq`, `defensive_iq`, `passing` (last to decline)
+Only physical attributes decline with age (see Section 6.1 aging curve). Decline priority:
+1. `SPEED`, `ACCELERATION`, `VERTICAL` (explosive attributes fade first)
+2. `STAMINA`, `AGILITY`
+3. `STRENGTH` (declines slowly)
+
+**Skills NEVER decline.** This is the core design principle that creates realistic veteran archetypes:
+- 35-year-old point guard: slow feet but S-rank Court Vision and PnR Master
+- 37-year-old shooter: can't drive anymore but A-rank Three-Point and Catch & Shoot
+- 34-year-old center: lost his vertical but S-rank Hook Shot and Rim Protector IQ
 
 ---
 
@@ -1730,6 +2066,7 @@ Age 36+:   Steep decline    (-3 to -6 OVR per season)
 | Version | Date | Author | Changes |
 |---------|------|--------|---------|
 | 1.0 | 2026-02-19 | — | Initial GDD |
+| 1.1 | 2026-02-19 | — | Replaced flat player attributes with two-layer system (Physical + RPG Skills), added skill trees with prerequisites, skill visual effects, EXP/learning system, player archetypes, updated training system |
 
 ---
 
