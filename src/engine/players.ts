@@ -18,11 +18,11 @@ const hawksPlayers: Player[] = [
     archetype: 'Sharpshooter',
     physical: { height: 193, wingspan: 198, weight: 88, speed: 75, acceleration: 78, vertical: 70, strength: 62, stamina: 75, agility: 80, hand_size: 72 },
     skills: {
-      shooting: { mid_range: 88, three_point: 93, close_shot: 65, free_throw: 88, catch_and_shoot: 85, pull_up: 72, fadeaway: 70, stepback: 82 },
+      shooting: { mid_range: 96, three_point: 98, close_shot: 65, free_throw: 95, catch_and_shoot: 97, pull_up: 95, fadeaway: 96, stepback: 95 },
       finishing: { layup: 65, euro_step: 60, floater: 60, dunk: 60, alley_oop: 60, reverse_layup: 60, post_move: 60 },
       playmaking: { passing: 60, ball_handling: 72, court_vision: 65, crossover: 68, pnr_read: 60, no_look_pass: 60, lob_pass: 60 },
       defense: { perimeter_d: 60, interior_d: 60, shot_contest: 60, block: 60, steal: 60, help_defense: 60, box_out: 60 },
-      athletic: { rebounding: 60, hustle: 60, screens: 60, off_ball_movement: 85, conditioning: 72 },
+      athletic: { rebounding: 60, hustle: 60, screens: 60, off_ball_movement: 97, conditioning: 95 },
     },
   },
   {
@@ -94,10 +94,10 @@ const wolvesPlayers: Player[] = [
     physical: { height: 199, wingspan: 210, weight: 95, speed: 85, acceleration: 88, vertical: 93, strength: 75, stamina: 80, agility: 85, hand_size: 80 },
     skills: {
       shooting: { mid_range: 60, three_point: 60, close_shot: 72, free_throw: 68, catch_and_shoot: 60, pull_up: 60, fadeaway: 60, stepback: 60 },
-      finishing: { layup: 82, euro_step: 80, floater: 62, dunk: 92, alley_oop: 85, reverse_layup: 72, post_move: 60 },
+      finishing: { layup: 95, euro_step: 80, floater: 62, dunk: 98, alley_oop: 96, reverse_layup: 72, post_move: 60 },
       playmaking: { passing: 60, ball_handling: 70, court_vision: 60, crossover: 72, pnr_read: 60, no_look_pass: 60, lob_pass: 60 },
-      defense: { perimeter_d: 78, interior_d: 72, shot_contest: 80, block: 82, steal: 72, help_defense: 75, box_out: 60 },
-      athletic: { rebounding: 72, hustle: 88, screens: 60, off_ball_movement: 75, conditioning: 82 },
+      defense: { perimeter_d: 95, interior_d: 72, shot_contest: 95, block: 97, steal: 96, help_defense: 75, box_out: 60 },
+      athletic: { rebounding: 95, hustle: 96, screens: 60, off_ball_movement: 75, conditioning: 95 },
     },
   },
   {

@@ -48,20 +48,30 @@ export function getPlayerCategoryRatings(p: Player): { shooting: number; finishi
   };
 }
 
-export function getPlayerOverall(p: Player): number {
-  const cats = getPlayerCategoryRatings(p);
-  // Weighted by position
-  let weights: Record<string, number>;
-  switch (p.position) {
-    case 'PG': weights = { shooting: 0.20, finishing: 0.10, playmaking: 0.30, defense: 0.15, athletic: 0.10, physical: 0.15 }; break;
-    case 'SG': weights = { shooting: 0.30, finishing: 0.15, playmaking: 0.15, defense: 0.15, athletic: 0.10, physical: 0.15 }; break;
-    case 'SF': weights = { shooting: 0.20, finishing: 0.15, playmaking: 0.10, defense: 0.20, athletic: 0.15, physical: 0.20 }; break;
-    case 'PF': weights = { shooting: 0.15, finishing: 0.20, playmaking: 0.05, defense: 0.20, athletic: 0.15, physical: 0.25 }; break;
-    case 'C':  weights = { shooting: 0.05, finishing: 0.20, playmaking: 0.05, defense: 0.25, athletic: 0.15, physical: 0.30 }; break;
-    default:   weights = { shooting: 0.17, finishing: 0.17, playmaking: 0.17, defense: 0.17, athletic: 0.16, physical: 0.16 };
+function gradePoint(value: number): number {
+  const g = skillToGrade(value);
+  switch (g) {
+    case 'S': return 10;
+    case 'A': return 9;
+    case 'B': return 8;
+    case 'C': return 7;
+    default:  return 6; // D
   }
-  const vals = cats as unknown as Record<string, number>;
-  return Math.round(Object.entries(weights).reduce((sum, [k, w]) => sum + vals[k] * w, 0));
+}
+
+export function getPlayerOverall(p: Player): number {
+  const allSkills: number[] = [
+    ...Object.values(p.skills.shooting),
+    ...Object.values(p.skills.finishing),
+    ...Object.values(p.skills.playmaking),
+    ...Object.values(p.skills.defense),
+    ...Object.values(p.skills.athletic),
+  ];
+  // Overall based on top 10 skills (what defines a player)
+  const sorted = allSkills.map(v => gradePoint(v)).sort((a, b) => b - a);
+  const top10 = sorted.slice(0, 10);
+  const avg = top10.reduce((s, v) => s + v, 0) / top10.length;
+  return Math.min(99, Math.round(avg * 10));
 }
 
 export function pickWeighted<T>(items: { item: T; weight: number }[], rng: Rng): T {
