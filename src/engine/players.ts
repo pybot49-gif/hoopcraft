@@ -96,7 +96,7 @@ const wolvesPlayers: Player[] = [
       shooting: { mid_range: 60, three_point: 60, close_shot: 72, free_throw: 68, catch_and_shoot: 60, pull_up: 60, fadeaway: 60, stepback: 60 },
       finishing: { layup: 95, euro_step: 80, floater: 62, dunk: 98, alley_oop: 96, reverse_layup: 72, post_move: 60 },
       playmaking: { passing: 60, ball_handling: 70, court_vision: 60, crossover: 72, pnr_read: 60, no_look_pass: 60, lob_pass: 60 },
-      defense: { perimeter_d: 95, interior_d: 95, shot_contest: 95, block: 97, steal: 78, help_defense: 75, box_out: 60 },
+      defense: { perimeter_d: 95, interior_d: 72, shot_contest: 95, block: 97, steal: 96, help_defense: 75, box_out: 60 },
       athletic: { rebounding: 95, hustle: 96, screens: 60, off_ball_movement: 75, conditioning: 95 },
     },
   },

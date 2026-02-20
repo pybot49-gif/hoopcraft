@@ -1009,11 +1009,14 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     };
   }
   
-  // Steal attempts — only check once every ~50 ticks (5 seconds) to keep rate realistic
-  // NBA: ~7-8 steals per team per game, ~100 possessions = ~7% per possession
+  // Steal attempts — check once per ~5 seconds (every 50 ticks)
+  // NBA reference: best stealers ~2.0 steals/game, avg ~0.8/game
+  // ~100 possessions/team → elite = 2%, avg = 0.8%
+  // Skill 96 (S) → ~2.5%, skill 60 (D) → ~0.5%
   const nearestDefender = findNearestDefender(handler, state);
   if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 50 === 0) {
-    const stealChance = skillModifier(nearestDefender.player.skills.defense.steal) * 0.06;
+    const stealSkill = nearestDefender.player.skills.defense.steal;
+    const stealChance = 0.003 + (stealSkill / 100) * 0.022; // D(60)=1.6%, S(96)=2.4%
     if (state.rng() < stealChance) {
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
@@ -1638,7 +1641,10 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   for (const def of defTeam) {
     const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
     if (distToLine < 2.5 && dist(def.pos, from.pos) < 12) {
-      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.004;
+      // Interception: skill-based absolute chance, not multiplied by modifier
+      // Elite stealer ~1.5% per pass, average ~0.3%
+      const stealSkill = def.player.skills.defense.steal;
+      const stealChance = 0.001 + (stealSkill / 100) * 0.012; // D(60)=0.8%, S(96)=1.3%
       if (state.rng() < stealChance) {
         clearBallCarrier(state);
         def.hasBall = true;
