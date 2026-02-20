@@ -92,10 +92,13 @@ type MissType = 'rim_out' | 'back_iron' | 'airball' | 'blocked' | 'front_rim' | 
 
 interface BallState {
   pos: Vec2;
+  z: number; // height off the ground in feet (0 = floor, 10 = rim height)
   carrier: SimPlayer | null;
   inFlight: boolean;
   flightFrom: Vec2;
   flightTo: Vec2;
+  flightFromZ: number;
+  flightPeakZ: number; // apex of arc
   flightProgress: number;
   flightDuration: number;
   isShot: boolean;
@@ -105,6 +108,8 @@ interface BallState {
   bouncing: boolean;
   bounceTarget: Vec2;
   bounceProgress: number;
+  bounceZ: number; // z during bounce
+  bounceVelZ: number; // vertical velocity during bounce
   jumpBall?: {
     active: boolean;
     height: number;
@@ -792,8 +797,9 @@ function tick(state: GameState): GameState {
   }
 
   // Ball follows carrier
-  if (state.ball.carrier && !state.ball.inFlight) {
+  if (state.ball.carrier && !state.ball.inFlight && !state.ball.bouncing) {
     state.ball.pos = { ...state.ball.carrier.pos };
+    state.ball.z = 4; // dribble height
   }
 
   return state;
@@ -1003,10 +1009,11 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     };
   }
   
-  // Steal attempts
+  // Steal attempts — only check once every ~50 ticks (5 seconds) to keep rate realistic
+  // NBA: ~7-8 steals per team per game, ~100 possessions = ~7% per possession
   const nearestDefender = findNearestDefender(handler, state);
-  if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 3) {
-    const stealChance = skillModifier(nearestDefender.player.skills.defense.steal) * 0.002;
+  if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 50 === 0) {
+    const stealChance = skillModifier(nearestDefender.player.skills.defense.steal) * 0.06;
     if (state.rng() < stealChance) {
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
@@ -1020,16 +1027,23 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
 function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[]): void {
   const basket = getTeamBasket(state.possession);
   
-  // Stage 1: Ball bouncing animation (first 8 ticks)
+  // Stage 1: Ball bouncing off rim with physics
   if (state.ball.bouncing) {
-    state.ball.bounceProgress += 0.12;
+    state.ball.bounceProgress += 0.08; // slower bounce
     const t = Math.min(1, state.ball.bounceProgress);
-    // Ball bounces from rim to bounce target
+    
+    // XY: move from rim to bounce target
     state.ball.pos.x = basket.x + (state.ball.bounceTarget.x - basket.x) * t;
     state.ball.pos.y = basket.y + (state.ball.bounceTarget.y - basket.y) * t;
     
+    // Z: bounce physics — starts at rim (10ft), bounces down, then up, then settles
+    // Damped bouncing: z = 10 * e^(-3t) * |cos(6πt)|
+    const dampedBounce = 10 * Math.exp(-3 * t) * Math.abs(Math.cos(6 * Math.PI * t));
+    state.ball.z = Math.max(0, dampedBounce);
+    
     if (t >= 1) {
       state.ball.bouncing = false;
+      state.ball.z = 0; // on the floor
     }
   }
   
@@ -1388,9 +1402,17 @@ function updateBallFlight(state: GameState, dt: number): void {
       state.ball.jumpBall.active = false;
     }
   } else {
-    // Regular flight
+    // Regular flight with z-arc
     state.ball.pos.x = state.ball.flightFrom.x + (state.ball.flightTo.x - state.ball.flightFrom.x) * t;
     state.ball.pos.y = state.ball.flightFrom.y + (state.ball.flightTo.y - state.ball.flightFrom.y) * t;
+    
+    // Parabolic arc: z = fromZ + (peakZ-fromZ)*4*t*(1-t) for peak at t=0.5
+    // At t=0: z = fromZ. At t=0.5: z = peakZ. At t=1: z ≈ fromZ (or rim height for shots)
+    const fromZ = state.ball.flightFromZ;
+    const peakZ = state.ball.flightPeakZ;
+    const endZ = state.ball.isShot ? 10 : 5; // shots end at rim height, passes at chest
+    // Quadratic bezier: z = (1-t)²*fromZ + 2*(1-t)*t*peakZ + t²*endZ  
+    state.ball.z = (1-t)*(1-t)*fromZ + 2*(1-t)*t*peakZ + t*t*endZ;
 
     if (t >= 1) {
       state.ball.inFlight = false;
@@ -1572,6 +1594,9 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...shooter.pos };
   state.ball.flightTo = { ...basket };
+  state.ball.flightFromZ = 7; // release point ~7ft (overhead)
+  // Arc height depends on distance — further = higher arc
+  state.ball.flightPeakZ = 10 + distToBasket * 0.3; // rim is 10ft, arc goes above
   state.ball.flightProgress = 0;
   state.ball.flightDuration = 0.6 + distToBasket * 0.02;
   state.ball.isShot = true;
@@ -1613,7 +1638,7 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   for (const def of defTeam) {
     const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
     if (distToLine < 2.5 && dist(def.pos, from.pos) < 12) {
-      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.015;
+      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.004;
       if (state.rng() < stealChance) {
         clearBallCarrier(state);
         def.hasBall = true;
@@ -1629,6 +1654,8 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...from.pos };
   state.ball.flightTo = { ...to.pos };
+  state.ball.flightFromZ = 5; // chest pass height
+  state.ball.flightPeakZ = 6 + dist(from.pos, to.pos) * 0.05; // slight arc on passes
   state.ball.flightProgress = 0;
   const d = dist(from.pos, to.pos);
   state.ball.flightDuration = 0.15 + d * 0.012;
@@ -1738,12 +1765,17 @@ function initGameState(): GameState {
       flightTo: { x: 0, y: 0 },
       flightProgress: 0,
       flightDuration: 0,
+      z: 4, // held at waist height
       isShot: false,
       shotWillScore: false,
       missType: null,
       bouncing: false,
       bounceTarget: { x: 0, y: 0 },
       bounceProgress: 0,
+      bounceZ: 0,
+      bounceVelZ: 0,
+      flightFromZ: 0,
+      flightPeakZ: 0,
       jumpBall: {
         active: false,
         height: 0,
@@ -1992,25 +2024,29 @@ function drawBall(ctx: CanvasRenderingContext2D, state: GameState) {
   const s = SCALE;
   const bx = state.ball.pos.x * s;
   const by = state.ball.pos.y * s;
+  // Z to pixels: 1 foot of height = 3 pixels up on screen
+  const zPx = state.ball.z * 3;
 
-  if (state.ball.inFlight) {
-    // Ball shadow
+  if (state.ball.inFlight || state.ball.bouncing) {
+    // Ball shadow on ground (size shrinks with height)
+    const shadowSize = Math.max(2, 6 - state.ball.z * 0.3);
+    const shadowAlpha = Math.max(0.1, 0.4 - state.ball.z * 0.02);
     ctx.beginPath();
-    ctx.arc(bx, by + 3, 5, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0,0,0,0.3)';
+    ctx.arc(bx, by, shadowSize, 0, Math.PI * 2);
+    ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
     ctx.fill();
 
-    // Elevated ball
-    let elevation = 0;
+    // Ball elevated by z
+    let elevation = zPx;
     if (state.ball.jumpBall?.active) {
-      elevation = state.ball.jumpBall.height;
-    } else {
-      const t = state.ball.flightProgress;
-      elevation = Math.sin(t * Math.PI) * (state.ball.isShot ? 20 : 8);
+      elevation = state.ball.jumpBall.height * 3;
     }
     
+    // Ball size slightly larger when closer (higher z = further from viewer in top-down)
+    const ballSize = 5 + Math.max(0, (10 - state.ball.z) * 0.2);
+    
     ctx.beginPath();
-    ctx.arc(bx, by - elevation, 6, 0, Math.PI * 2);
+    ctx.arc(bx, by - elevation, ballSize, 0, Math.PI * 2);
     ctx.fillStyle = '#e69138';
     ctx.fill();
     ctx.strokeStyle = '#b45309';
@@ -2018,13 +2054,13 @@ function drawBall(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.stroke();
     
     // Ball spin lines for shots
-    if (state.ball.isShot) {
-      const spinAngle = state.ball.flightProgress * Math.PI * 4;
+    if (state.ball.isShot && state.ball.inFlight) {
+      const spinAngle = state.ball.flightProgress * Math.PI * 6;
       ctx.strokeStyle = '#b45309';
       ctx.lineWidth = 1;
       ctx.beginPath();
-      ctx.moveTo(bx + Math.cos(spinAngle) * 4, by - elevation + Math.sin(spinAngle) * 2);
-      ctx.lineTo(bx - Math.cos(spinAngle) * 4, by - elevation - Math.sin(spinAngle) * 2);
+      ctx.moveTo(bx + Math.cos(spinAngle) * 3, by - elevation + Math.sin(spinAngle) * 1.5);
+      ctx.lineTo(bx - Math.cos(spinAngle) * 3, by - elevation - Math.sin(spinAngle) * 1.5);
       ctx.stroke();
     }
   } else if (!state.ball.carrier) {
