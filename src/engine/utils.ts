@@ -12,23 +12,23 @@ export function createRng(seed: number) {
 export type Rng = ReturnType<typeof createRng>;
 
 export function skillToGrade(value: number): string {
-  if (value >= 90) return 'S';
-  if (value >= 75) return 'A';
-  if (value >= 60) return 'B';
-  if (value >= 45) return 'C';
-  if (value >= 30) return 'D';
-  if (value >= 15) return 'E';
+  if (value >= 95) return 'S';
+  if (value >= 85) return 'A';
+  if (value >= 75) return 'B';
+  if (value >= 65) return 'C';
+  if (value >= 55) return 'D';
+  if (value >= 40) return 'E';
   return 'F';
 }
 
 export function skillModifier(value: number): number {
-  if (value >= 90) return 1.05;
-  if (value >= 75) return 0.95;
-  if (value >= 60) return 0.88;
-  if (value >= 45) return 0.78;
-  if (value >= 30) return 0.65;
-  if (value >= 15) return 0.5;
-  return 0.3;
+  if (value >= 95) return 1.05;
+  if (value >= 85) return 0.98;
+  if (value >= 75) return 0.92;
+  if (value >= 65) return 0.85;
+  if (value >= 55) return 0.75;
+  if (value >= 40) return 0.6;
+  return 0.4;
 }
 
 export function formatTime(secondsRemaining: number): string {

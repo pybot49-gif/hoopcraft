@@ -128,50 +128,27 @@ function PlayerModal({ player, onClose }: { player: Player; onClose: () => void 
           </div>
         </div>
 
-        <div className="mb-2">
-          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🎯 Shooting</h4>
-          <div className="flex flex-wrap">
-            {Object.entries(p.skills.shooting).map(([k, v]) => (
-              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🏀 Finishing</h4>
-          <div className="flex flex-wrap">
-            {Object.entries(p.skills.finishing).map(([k, v]) => (
-              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🎭 Playmaking</h4>
-          <div className="flex flex-wrap">
-            {Object.entries(p.skills.playmaking).map(([k, v]) => (
-              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">🛡️ Defense</h4>
-          <div className="flex flex-wrap">
-            {Object.entries(p.skills.defense).map(([k, v]) => (
-              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
-            ))}
-          </div>
-        </div>
-
-        <div className="mb-2">
-          <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">💪 Athletic</h4>
-          <div className="flex flex-wrap">
-            {Object.entries(p.skills.athletic).map(([k, v]) => (
-              <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
-            ))}
-          </div>
-        </div>
+        {([
+          ['🎯 Shooting', p.skills.shooting as unknown as Record<string, number>],
+          ['🏀 Finishing', p.skills.finishing as unknown as Record<string, number>],
+          ['🎭 Playmaking', p.skills.playmaking as unknown as Record<string, number>],
+          ['🛡️ Defense', p.skills.defense as unknown as Record<string, number>],
+          ['💪 Athletic', p.skills.athletic as unknown as Record<string, number>],
+        ] as [string, Record<string, number>][]).map(([label, skills]) => {
+          const skillEntries = Object.entries(skills);
+          const learned = skillEntries.filter(([, v]) => skillToGrade(v) !== 'D' && skillToGrade(v) !== 'E' && skillToGrade(v) !== 'F');
+          if (learned.length === 0) return null;
+          return (
+            <div key={label} className="mb-2">
+              <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">{label}</h4>
+              <div className="flex flex-wrap">
+                {learned.map(([k, v]) => (
+                  <SkillBadge key={k} name={k.replace(/_/g, ' ')} value={v} />
+                ))}
+              </div>
+            </div>
+          );
+        })}
       </div>
     </div>
   );
