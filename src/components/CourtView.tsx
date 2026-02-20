@@ -797,7 +797,7 @@ export function CourtView() {
         </button>
         <div className="flex items-center gap-2 text-xs text-[var(--color-text-dim)]">
           Speed:
-          {[1, 2, 4].map(s => (
+          {[0.5, 1, 2, 4].map(s => (
             <button
               key={s}
               onClick={() => setSpeed(s)}
