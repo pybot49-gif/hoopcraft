@@ -42,6 +42,8 @@ type SlotName =
 
 type OffenseRole = 'ballHandler' | 'screener' | 'cutter' | 'spacer' | 'postUp';
 
+type PossessionStage = 'early' | 'mid' | 'late' | 'desperation';
+
 type RoleAction = 
   | { type: 'moveTo', slot: SlotName }
   | { type: 'screen', target: OffenseRole }
@@ -51,7 +53,13 @@ type RoleAction =
   | { type: 'postUp' }
   | { type: 'pop', slot: SlotName }
   | { type: 'roll' }
-  | { type: 'relocate' };
+  | { type: 'relocate' }
+  // NEW ball actions:
+  | { type: 'passTo', target: OffenseRole }      // pass to specific role
+  | { type: 'shootIfOpen' }                       // shoot if defender > 6ft
+  | { type: 'readAndReact' }                      // smart decision based on defense
+  | { type: 'callForBall' }                       // signal to handler, increase pass weight
+  | { type: 'entryPass', target: OffenseRole };   // post entry pass
 
 interface PlayStep {
   id: number;
@@ -149,6 +157,8 @@ interface GameState {
   lastPassTime: number;
   crossedHalfCourt: boolean;
   advanceClock: number;
+  possessionStage: PossessionStage;  // current stage
+  playCompleted: boolean;  // has the primary play finished?
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -249,7 +259,18 @@ function fillEmptySlots(state: GameState): void {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 3. PLAYBOOK SYSTEM  
+// 3. POSSESSION STATE MACHINE (SYSTEM 1)
+// ══════════════════════════════════════════════════════════════════════════
+
+function getPossessionStage(shotClock: number): PossessionStage {
+  if (shotClock > 18) return 'early';      // 0-6s into possession
+  if (shotClock > 10) return 'mid';        // 6-14s
+  if (shotClock > 4) return 'late';        // 14-20s  
+  return 'desperation';                     // 20-24s
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 4. PLAYBOOK SYSTEM  
 // ══════════════════════════════════════════════════════════════════════════
 
 function createPickAndRollRight(): Play {
@@ -279,8 +300,8 @@ function createPickAndRollRight(): Play {
     id: 3,
     duration: 3,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }], // Read & react
-      ['screener', { type: 'roll' }],
+      ['ballHandler', { type: 'readAndReact' }], // Smart decision based on defense
+      ['screener', { type: 'callForBall' }],     // Signal for pass if open
       ['spacer', { type: 'hold' }],
     ]),
     trigger: 'time'
@@ -308,7 +329,7 @@ function createMotionOffense(): Play {
     id: 2,
     duration: 2,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }],
+      ['ballHandler', { type: 'passTo', target: 'spacer' }], // Pass to wing
       ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_RIGHT_CORNER' }],
       ['screener', { type: 'screen', target: 'cutter' }],
     ]),
@@ -319,16 +340,27 @@ function createMotionOffense(): Play {
     id: 3,
     duration: 2,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }],
+      ['ballHandler', { type: 'readAndReact' }], // New handler (wing) reads defense
       ['screener', { type: 'pop', slot: 'SLOT_LEFT_ELBOW' }],
+      ['cutter', { type: 'callForBall' }], // Cutter calls for ball from corner
+    ]),
+    trigger: 'time'
+  };
+  
+  const step4: PlayStep = {
+    id: 4,
+    duration: 2,
+    actions: new Map([
+      ['ballHandler', { type: 'readAndReact' }], // Swing ball, read again
       ['spacer', { type: 'hold' }],
+      ['screener', { type: 'hold' }],
     ]),
     trigger: 'time'
   };
   
   return {
     name: 'Motion Offense',
-    steps: [step1, step2, step3]
+    steps: [step1, step2, step3, step4]
   };
 }
 
@@ -347,7 +379,7 @@ function createIsoPlay(): Play {
     id: 2,
     duration: 4,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }], // 1v1 work
+      ['ballHandler', { type: 'readAndReact' }], // 1v1: jab, drive, shoot, or kick out if double-teamed
       ['spacer', { type: 'hold' }],
     ]),
     trigger: 'time'
@@ -375,8 +407,8 @@ function createPostUpPlay(): Play {
     id: 2,
     duration: 2,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }], // Entry pass opportunity
-      ['postUp', { type: 'postUp' }],
+      ['ballHandler', { type: 'entryPass', target: 'postUp' }], // Entry pass to post
+      ['postUp', { type: 'callForBall' }],
       ['spacer', { type: 'hold' }],
     ]),
     trigger: 'pass'
@@ -386,7 +418,7 @@ function createPostUpPlay(): Play {
     id: 3,
     duration: 3,
     actions: new Map([
-      ['postUp', { type: 'hold' }], // Post moves
+      ['postUp', { type: 'readAndReact' }], // Post moves (back down, hook shot, or kick out)
       ['spacer', { type: 'hold' }],
     ]),
     trigger: 'time'
@@ -401,9 +433,9 @@ function createPostUpPlay(): Play {
 function createFastBreak(): Play {
   const step1: PlayStep = {
     id: 1,
-    duration: 1,
+    duration: 1.5,
     actions: new Map([
-      ['ballHandler', { type: 'drive', direction: 'baseline' }], // Push pace
+      ['ballHandler', { type: 'drive', direction: 'baseline' }], // Push pace at full speed
       ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LEFT_CORNER' }],
       ['spacer', { type: 'cut', from: 'SLOT_RIGHT_WING', to: 'SLOT_RIGHT_CORNER' }],
     ]),
@@ -412,9 +444,9 @@ function createFastBreak(): Play {
   
   const step2: PlayStep = {
     id: 2,
-    duration: 2,
+    duration: 1.5,
     actions: new Map([
-      ['ballHandler', { type: 'hold' }], // Attack or pull up
+      ['ballHandler', { type: 'readAndReact' }], // If numbers advantage: layup. If not: pull up or kick to wing
       ['cutter', { type: 'hold' }],
       ['spacer', { type: 'hold' }],
     ]),
@@ -436,7 +468,7 @@ const PLAYBOOK: Play[] = [
 ];
 
 // ══════════════════════════════════════════════════════════════════════════
-// 4. ROLE ASSIGNMENT SYSTEM
+// 5. ROLE ASSIGNMENT SYSTEM
 // ══════════════════════════════════════════════════════════════════════════
 
 function assignRoles(state: GameState): void {
@@ -499,7 +531,7 @@ function assignRoles(state: GameState): void {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 5. DEFENSIVE ASSIGNMENT SYSTEM  
+// 6. DEFENSIVE ASSIGNMENT SYSTEM (SYSTEM 4)
 // ══════════════════════════════════════════════════════════════════════════
 
 function updateDefenseAssignments(state: GameState): void {
@@ -610,8 +642,179 @@ function processHelpDefense(state: GameState): void {
   }
 }
 
+function handleScreenDefense(state: GameState): void {
+  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  const tactic = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
+  
+  for (const defender of defTeam) {
+    const assignment = state.players.find(p => p.id === state.defAssignments.get(defender.id));
+    if (!assignment) continue;
+    
+    // Check if assignment is being screened
+    const screener = state.players.find(p => 
+      p.teamIdx === state.possession && p.isScreening && 
+      dist(p.pos, defender.pos) < 4
+    );
+    
+    if (screener) {
+      if (tactic === 'man') {
+        // 50% switch, 50% fight through
+        if (state.rng() < 0.5) {
+          // SWITCH: swap assignments
+          const screenerDefender = findDefenderOf(screener, state);
+          if (screenerDefender) {
+            swapAssignments(defender, screenerDefender, state);
+          }
+        } else {
+          // FIGHT THROUGH: go around screen
+          defender.targetPos = {
+            x: assignment.pos.x + (assignment.pos.x > screener.pos.x ? 3 : -3),
+            y: assignment.pos.y
+          };
+        }
+      }
+      // zone: ignore screen, stay in zone
+      // press: always switch
+    }
+  }
+}
+
+function handleHelpDefense(state: GameState): void {
+  const handler = getBallHandler(state);
+  if (!handler) return;
+  
+  const basket = getTeamBasket(state.possession);
+  const distToBasket = dist(handler.pos, basket);
+  
+  // If ball handler is driving (moving toward basket fast, within 15ft)
+  if (distToBasket < 15) {
+    const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+    
+    // Find the help defender (closest to basket, not guarding ball handler)
+    const ballDefender = findDefenderOf(handler, state);
+    const helpCandidates = defTeam
+      .filter(d => d !== ballDefender)
+      .sort((a, b) => dist(a.pos, basket) - dist(b.pos, basket));
+    
+    if (helpCandidates.length > 0) {
+      const helper = helpCandidates[0];
+      // Step into driving lane
+      helper.targetPos = {
+        x: (handler.pos.x + basket.x) / 2,
+        y: (handler.pos.y + basket.y) / 2
+      };
+      
+      // The player the helper LEFT is now open
+      // This should be detected by offense's readAndReact → kick out pass
+    }
+  }
+}
+
 // ══════════════════════════════════════════════════════════════════════════
-// 6. COURT VISION & PASS INTELLIGENCE
+// 7. INTELLIGENT BASKETBALL FUNCTIONS (SYSTEM 2 & 3)
+// ══════════════════════════════════════════════════════════════════════════
+
+function checkIfWideOpen(player: SimPlayer, state: GameState): boolean {
+  const defender = findNearestDefender(player, state);
+  return !defender || dist(defender.pos, player.pos) > 8;
+}
+
+function getOpenTeammates(state: GameState, handler: SimPlayer): SimPlayer[] {
+  const offTeam = state.players.filter(p => p.teamIdx === state.possession);
+  return offTeam.filter(p => {
+    if (p === handler) return false;
+    const defender = findNearestDefender(p, state);
+    return !defender || dist(defender.pos, p.pos) > 6;
+  });
+}
+
+function findBestScorer(team: SimPlayer[]): SimPlayer {
+  return team.reduce((best, p) => {
+    const scoringSkill = (p.player.skills.shooting.three_point + p.player.skills.shooting.mid_range + p.player.skills.finishing.layup) / 3;
+    const bestScoringSkill = (best.player.skills.shooting.three_point + best.player.skills.shooting.mid_range + best.player.skills.finishing.layup) / 3;
+    
+    // Superstar bonus
+    const pScore = scoringSkill + (p.player.isSuperstar ? 20 : 0);
+    const bestScore = bestScoringSkill + (best.player.isSuperstar ? 20 : 0);
+    
+    return pScore > bestScore ? p : best;
+  });
+}
+
+function findDefenderOf(offPlayer: SimPlayer, state: GameState): SimPlayer | null {
+  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  return defTeam.find(def => state.defAssignments.get(def.id) === offPlayer.id) || null;
+}
+
+function swapAssignments(def1: SimPlayer, def2: SimPlayer, state: GameState): void {
+  const assignment1 = state.defAssignments.get(def1.id);
+  const assignment2 = state.defAssignments.get(def2.id);
+  
+  if (assignment1) state.defAssignments.set(def2.id, assignment1);
+  if (assignment2) state.defAssignments.set(def1.id, assignment2);
+}
+
+function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Vec2): void {
+  const distToBasket = dist(handler.pos, basketPos);
+  const isOpen = checkIfOpen(handler, state);  // defender > 6ft
+  const isWideOpen = checkIfWideOpen(handler, state); // defender > 8ft
+  
+  // 1. Layup/dunk range
+  if (distToBasket < 5) {
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  
+  // 2. Open and in range → shoot
+  if (isOpen && distToBasket < 22) {
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  
+  // 3. Find open teammates
+  const openTeammates = getOpenTeammates(state, handler); // defender > 6ft away
+  
+  // Roller is open (PnR read)
+  const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
+  if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
+    passBall(state, handler, roller);
+    return;
+  }
+  
+  // Corner/wing shooter open (kick out)
+  const openShooter = openTeammates.find(p => {
+    const d = dist(p.pos, basketPos);
+    return d > 18 && d < 26; // perimeter
+  });
+  if (openShooter) {
+    passBall(state, handler, openShooter);
+    return;
+  }
+  
+  // 4. Drive if path is clear
+  const defAhead = findNearestDefender(handler, state);
+  if (!defAhead || dist(defAhead.pos, handler.pos) > 5) {
+    handler.targetPos = {
+      x: basketPos.x + (handler.pos.x > basketPos.x ? 2 : -2),
+      y: basketPos.y + (state.rng() - 0.5) * 4,
+    };
+    return;
+  }
+  
+  // 5. Pass to any open teammate
+  if (openTeammates.length > 0) {
+    passBall(state, handler, openTeammates[0]);
+    return;
+  }
+  
+  // 6. Contested shot if decent shooter
+  if (distToBasket < 20) {
+    attemptShot(state, handler, basketPos);
+  }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// 8. COURT VISION & PASS INTELLIGENCE
 // ══════════════════════════════════════════════════════════════════════════
 
 function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
@@ -671,7 +874,7 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 7. TICK/SIMULATION LOGIC
+// 9. TICK/SIMULATION LOGIC
 // ══════════════════════════════════════════════════════════════════════════
 
 function tick(state: GameState): GameState {
@@ -771,12 +974,18 @@ function tick(state: GameState): GameState {
   // Update defense EVERY phase (not just action/setup)
   if (state.phase !== 'jumpball') {
     updateDefenseAssignments(state);
+    
+    // New defensive systems (System 4)
+    if (state.phase === 'action' || state.phase === 'setup') {
+      handleScreenDefense(state);
+      handleHelpDefense(state);
+      processHelpDefense(state); // Keep existing help defense too
+    }
   }
   
   // Update offensive systems during action/setup
   if (state.phase === 'action' || state.phase === 'setup') {
     assignRoles(state);
-    processHelpDefense(state);
     
     if (state.currentPlay) {
       updateCurrentPlay(state, basketPos, dir);
@@ -967,46 +1176,44 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   const handler = getBallHandler(state);
   if (!handler) return;
   
-  // Update current play if one is active
+  // Update possession stage
+  state.possessionStage = getPossessionStage(state.shotClock);
+  
+  // If a play is active, let the play drive decisions
   if (state.currentPlay) {
     updateCurrentPlay(state, basketPos, dir);
+    // Play's readAndReact/passTo/shootIfOpen will handle ball decisions
+    return; // DON'T also run random decisions
   }
   
-  // Ball handler decision making
-  const distToBasket = dist(handler.pos, basketPos);
-  const isOpen = checkIfOpen(handler, state);
-  const timeUrgency = state.shotClock < 8;
-  
-  const roll = state.rng();
-  const possessionAge = 24 - state.shotClock; // seconds into possession
-  
-  if (state.shotClock < 2) {
-    // Desperation shot
-    attemptShot(state, handler, basketPos);
-  } else if (state.shotClock < 6 && distToBasket < 25) {
-    // Shot clock pressure — just shoot if reasonable
-    attemptShot(state, handler, basketPos);
-  } else if (isOpen && distToBasket < 25 && roll < 0.15) {
-    // Open shot — take it
-    attemptShot(state, handler, basketPos);
-  } else if (distToBasket < 8 && roll < 0.20) {
-    // Close to basket — high chance to score
-    attemptShot(state, handler, basketPos);
-  } else if (possessionAge > 12 && distToBasket < 28 && roll < 0.10) {
-    // Late in possession — be more aggressive
-    attemptShot(state, handler, basketPos);
-  } else if (roll < 0.08) {
-    // Look for pass
-    const passOptions = getPassOptions(state, handler);
-    if (passOptions.length > 0) {
-      passBall(state, handler, passOptions[0]);
-    }
-  } else if (roll < 0.12 && distToBasket > 15) {
-    // Drive toward basket
-    handler.targetPos = {
-      x: basketPos.x + (handler.pos.x > basketPos.x ? 3 : -3),
-      y: basketPos.y + (state.rng() - 0.5) * 8,
-    };
+  // No play active — use decision tree based on possession stage
+  switch (state.possessionStage) {
+    case 'early':
+      // Select and run a play if we don't have one
+      selectPlay(state, offTeam);
+      break;
+      
+    case 'mid':
+      // Play finished, read & react
+      executeReadAndReact(handler, state, basketPos);
+      break;
+      
+    case 'late':
+      // Give to best scorer, take shots
+      const bestScorer = findBestScorer(offTeam);
+      if (handler !== bestScorer && checkIfOpen(bestScorer, state)) {
+        passBall(state, handler, bestScorer);
+      } else {
+        // More aggressive shot taking
+        const distToBasket = dist(handler.pos, basketPos);
+        if (distToBasket < 25) attemptShot(state, handler, basketPos);
+        else executeReadAndReact(handler, state, basketPos);
+      }
+      break;
+      
+    case 'desperation':
+      attemptShot(state, handler, basketPos);
+      break;
   }
   
   // Steal attempts — check once per ~5 seconds (every 50 ticks)
@@ -1249,6 +1456,52 @@ function executeRoleAction(player: SimPlayer, action: RoleAction, state: GameSta
         x: basketPos.x - dir * 8,
         y: basketPos.y + (state.rng() - 0.5) * 6
       };
+      break;
+    
+    // NEW ball actions:
+    case 'passTo':
+      const handler = getBallHandler(state);
+      if (handler && handler === player) {
+        const targetPlayer = state.players.find(p => p.currentRole === action.target && p.teamIdx === state.possession);
+        if (targetPlayer && targetPlayer !== handler) {
+          passBall(state, handler, targetPlayer);
+        }
+      }
+      break;
+      
+    case 'shootIfOpen':
+      const ballHandler = getBallHandler(state);
+      if (ballHandler && ballHandler === player) {
+        const isOpen = checkIfOpen(player, state); // defender > 6ft
+        if (isOpen) {
+          attemptShot(state, player, basketPos);
+        }
+      }
+      break;
+      
+    case 'readAndReact':
+      const currentHandler = getBallHandler(state);
+      if (currentHandler && currentHandler === player) {
+        executeReadAndReact(player, state, basketPos);
+      }
+      break;
+      
+    case 'callForBall':
+      // This affects pass selection in readAndReact - player signals they want the ball
+      // Implementation is handled in readAndReact logic
+      break;
+      
+    case 'entryPass':
+      const passer = getBallHandler(state);
+      if (passer && passer === player) {
+        const postPlayer = state.players.find(p => p.currentRole === action.target && p.teamIdx === state.possession);
+        if (postPlayer && postPlayer !== passer) {
+          // Check if entry pass lane is clear
+          if (!isPassLaneBlocked(passer, postPlayer, state)) {
+            passBall(state, passer, postPlayer);
+          }
+        }
+      }
       break;
   }
 }
@@ -1751,6 +2004,8 @@ function resetPossession(state: GameState): void {
   state.advanceClock = 0;
   state.lastPassFrom = null;
   state.lastPassTime = 0;
+  state.possessionStage = 'early';
+  state.playCompleted = false;
   
   // Reset player states
   state.players.forEach(p => {
@@ -1874,11 +2129,13 @@ function initGameState(): GameState {
     lastPassTime: 0,
     crossedHalfCourt: false,
     advanceClock: 0,
+    possessionStage: 'early',
+    playCompleted: false,
   };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 8. DRAWING FUNCTIONS
+// 10. DRAWING FUNCTIONS
 // ══════════════════════════════════════════════════════════════════════════
 
 function drawCourt(ctx: CanvasRenderingContext2D) {
@@ -2208,6 +2465,14 @@ function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.fillText(playText, 10, CANVAS_H - 10);
   }
   
+  // Possession stage indicator
+  ctx.fillStyle = state.possessionStage === 'desperation' ? '#f85149' : 
+                  state.possessionStage === 'late' ? '#e3b341' :
+                  state.possessionStage === 'mid' ? '#3fb950' : '#58a6ff';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'left';
+  ctx.fillText(`Possession: ${state.possessionStage.toUpperCase()}`, 10, CANVAS_H - 25);
+  
   // Phase indicator
   ctx.fillStyle = '#8b949e';
   ctx.font = '8px monospace';
@@ -2216,7 +2481,7 @@ function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 9. REACT COMPONENT
+// 11. REACT COMPONENT
 // ══════════════════════════════════════════════════════════════════════════
 
 export function CourtView() {
