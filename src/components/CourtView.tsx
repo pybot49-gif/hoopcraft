@@ -971,16 +971,18 @@ function tick(state: GameState): GameState {
       break;
   }
 
-  // Update defense EVERY phase (not just action/setup)
-  if (state.phase !== 'jumpball') {
+  // Defense: only run full assignments during setup/action
+  // During inbound/advance, defense retreats (targets set by handleInbound/handleAdvance/resetPossession)
+  if (state.phase === 'action' || state.phase === 'setup') {
     updateDefenseAssignments(state);
-    
-    // New defensive systems (System 4)
-    if (state.phase === 'action' || state.phase === 'setup') {
-      handleScreenDefense(state);
-      handleHelpDefense(state);
-      processHelpDefense(state); // Keep existing help defense too
-    }
+    handleScreenDefense(state);
+    handleHelpDefense(state);
+    processHelpDefense(state);
+  } else if (state.phase === 'inbound' || state.phase === 'advance') {
+    // Defense retreats — targets already set, just let them move
+    // Only update sliding state
+    const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+    defTeam.forEach(d => { d.isDefensiveSliding = false; });
   }
   
   // Update offensive systems during action/setup
@@ -1041,6 +1043,20 @@ function handleJumpBall(state: GameState): void {
 
 function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[], dir: number): void {
   const ownBasket = getOwnBasket(state.possession);
+  const oppBasket = getTeamBasket(state.possession); // basket offense attacks
+  
+  // Defense retreats to their defensive half (near the basket they defend)
+  // This gives them time to get back while offense inbounds
+  if (state.phaseTicks <= 5) {
+    // Sprint back to defensive positions near their basket
+    for (let i = 0; i < defTeam.length; i++) {
+      const defDir = state.possession === 0 ? 1 : -1; // direction toward basket defense protects
+      defTeam[i].targetPos = {
+        x: oppBasket.x - defDir * (8 + i * 4),
+        y: BASKET_Y + (i - 2) * 8
+      };
+    }
+  }
   
   // Stage 1 (ticks 0-15): Set up inbound formation
   if (state.phaseTicks < 15) {
@@ -1130,11 +1146,11 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     spotIdx++;
   }
   
-  // Defense retreats to their half (around their basket)
+  // Defense settles into defensive half (tightens formation as offense approaches)
   for (let i = 0; i < defTeam.length; i++) {
     defTeam[i].targetPos = {
-      x: basketPos.x - dir * (12 + i * 3),
-      y: BASKET_Y + (i - 2) * 7
+      x: basketPos.x - dir * (8 + i * 3),
+      y: BASKET_Y + (i - 2) * 6
     };
   }
   
@@ -1618,6 +1634,19 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
   player.pos.x += player.vel.x * dt;
   player.pos.y += player.vel.y * dt;
   
+  // Collision avoidance — repulsion from nearby players
+  for (const other of state.players) {
+    if (other === player) continue;
+    const dx2 = player.pos.x - other.pos.x;
+    const dy2 = player.pos.y - other.pos.y;
+    const d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
+    if (d2 < 2.5 && d2 > 0.01) {
+      const pushStrength = (2.5 - d2) * 0.3;
+      player.pos.x += (dx2 / d2) * pushStrength * dt;
+      player.pos.y += (dy2 / d2) * pushStrength * dt;
+    }
+  }
+
   // Boundary constraints
   player.pos.x = clamp(player.pos.x, 1, COURT_W - 1);
   player.pos.y = clamp(player.pos.y, 1, COURT_H - 1);
@@ -1625,10 +1654,10 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
   // Update fatigue
   player.fatigue = Math.min(1, player.fatigue + dt * 0.001 * (1 - player.player.physical.stamina / 100));
   
-  // Idle movement
+  // Idle movement (subtle jitter for natural look)
   const t = state.gameTime * 0.5 + player.courtIdx * 1.2;
-  player.pos.x += Math.sin(t) * 0.1;
-  player.pos.y += Math.cos(t * 1.3) * 0.05;
+  player.pos.x += Math.sin(t) * 0.05;
+  player.pos.y += Math.cos(t * 1.3) * 0.03;
 }
 
 function updateBallFlight(state: GameState, dt: number): void {
