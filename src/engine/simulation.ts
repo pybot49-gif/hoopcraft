@@ -299,8 +299,9 @@ function simulatePossession(
     const res = resultText(true, false, isThree, playType, rng);
     addPBP(state, quarter, timeStr, `${prefix} ${desc}... ${res}`, teamColor, shooter.name);
 
-    // And-1 chance (3%)
-    if (rng() < 0.03) {
+    // And-1 chance (8% on drives/dunks/inside, 3% on jumpers)
+    const andOneChance = ['layup', 'dunk', 'post', 'fastbreak_layup', 'fastbreak_dunk'].includes(playType) ? 0.08 : 0.03;
+    if (rng() < andOneChance) {
       getStat(defStats, defender.id).fouls += 1;
       shooterStats.ftAttempted += 1;
       const ftMod = skillModifier(shooter.skills.shooting.free_throw);

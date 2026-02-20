@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Player, PlayerGameStats, Team } from '../engine/types';
-import { skillToGrade } from '../engine/utils';
+import { skillToGrade, getPlayerOverall, getPlayerCategoryRatings } from '../engine/utils';
 
 function fgStr(made: number, att: number) {
   return att > 0 ? `${made}/${att}` : '0/0';
@@ -28,8 +28,67 @@ function SkillBadge({ name, value }: { name: string; value: number }) {
   );
 }
 
+function HexagonChart({ ratings }: { ratings: Record<string, number> }) {
+  const labels = ['Shooting', 'Finishing', 'Playmaking', 'Defense', 'Athletic', 'Physical'];
+  const keys = ['shooting', 'finishing', 'playmaking', 'defense', 'athletic', 'physical'];
+  const cx = 120, cy = 110, maxR = 80;
+
+  const pointsForValue = (values: number[]) => {
+    return values.map((v, i) => {
+      const angle = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+      const r = (v / 100) * maxR;
+      return `${cx + r * Math.cos(angle)},${cy + r * Math.sin(angle)}`;
+    }).join(' ');
+  };
+
+  const values = keys.map(k => (ratings as Record<string, number>)[k] || 0);
+
+  // Grid rings at 25, 50, 75, 100
+  const rings = [25, 50, 75, 100].map(v =>
+    pointsForValue(Array(6).fill(v))
+  );
+
+  // Label positions
+  const labelPositions = labels.map((_, i) => {
+    const angle = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+    const r = maxR + 20;
+    return { x: cx + r * Math.cos(angle), y: cy + r * Math.sin(angle) };
+  });
+
+  return (
+    <svg viewBox="0 0 240 230" className="w-full max-w-[240px] mx-auto">
+      {/* Grid rings */}
+      {rings.map((pts, i) => (
+        <polygon key={i} points={pts} fill="none" stroke="#21262d" strokeWidth="1" />
+      ))}
+      {/* Axes */}
+      {Array(6).fill(0).map((_, i) => {
+        const angle = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+        return <line key={i} x1={cx} y1={cy} x2={cx + maxR * Math.cos(angle)} y2={cy + maxR * Math.sin(angle)} stroke="#21262d" strokeWidth="1" />;
+      })}
+      {/* Data polygon */}
+      <polygon points={pointsForValue(values)} fill="rgba(63,185,80,0.25)" stroke="#3fb950" strokeWidth="2" />
+      {/* Data points */}
+      {values.map((v, i) => {
+        const angle = (Math.PI * 2 * i) / 6 - Math.PI / 2;
+        const r = (v / 100) * maxR;
+        return <circle key={i} cx={cx + r * Math.cos(angle)} cy={cy + r * Math.sin(angle)} r="3" fill="#3fb950" />;
+      })}
+      {/* Labels */}
+      {labelPositions.map((pos, i) => (
+        <text key={i} x={pos.x} y={pos.y} textAnchor="middle" dominantBaseline="middle" fill="#7d8590" fontSize="9" fontFamily="monospace">
+          {labels[i]} {values[i]}
+        </text>
+      ))}
+    </svg>
+  );
+}
+
 function PlayerModal({ player, onClose }: { player: Player; onClose: () => void }) {
   const p = player;
+  const overall = getPlayerOverall(p);
+  const cats = getPlayerCategoryRatings(p);
+
   return (
     <div className="fixed inset-0 bg-black/80 flex items-center justify-center z-50 p-4" onClick={onClose}>
       <div className="bg-[#0d1117] border border-[var(--color-border)] rounded-lg max-w-md w-full max-h-[90vh] overflow-y-auto p-4" onClick={e => e.stopPropagation()}>
@@ -41,8 +100,17 @@ function PlayerModal({ player, onClose }: { player: Player; onClose: () => void 
             </h3>
             <p className="text-xs text-[var(--color-text-dim)]">{p.position} · {p.archetype}</p>
           </div>
-          <button onClick={onClose} className="text-[var(--color-text-dim)] hover:text-white text-xl">✕</button>
+          <div className="flex items-center gap-2">
+            <div className="text-center">
+              <div className="text-2xl font-bold" style={{ color: overall >= 80 ? '#3fb950' : overall >= 65 ? '#d29922' : '#f85149' }}>{overall}</div>
+              <div className="text-[10px] text-[var(--color-text-dim)]">OVR</div>
+            </div>
+            <button onClick={onClose} className="text-[var(--color-text-dim)] hover:text-white text-xl ml-2">✕</button>
+          </div>
         </div>
+
+        {/* Hexagon Chart */}
+        <HexagonChart ratings={cats} />
 
         <div className="mb-3">
           <h4 className="text-xs font-bold text-[var(--color-text-dim)] mb-1 uppercase">Physical</h4>
