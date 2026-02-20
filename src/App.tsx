@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { useSelector, useDispatch } from 'react-redux';
 import { RootState } from './store';
 import { setHomeOffense, setHomeDefense, setAwayOffense, setAwayDefense, metroHawks, bayCityWolves } from './store/teamsSlice';
@@ -9,8 +10,12 @@ import { BoxScore } from './components/BoxScore';
 import { PlayByPlay } from './components/PlayByPlay';
 import { QuarterBreakdown } from './components/QuarterBreakdown';
 import { TacticSelector } from './components/TacticSelector';
+import { CourtView } from './components/CourtView';
+
+type ViewMode = 'text' | 'court';
 
 export default function App() {
+  const [viewMode, setViewMode] = useState<ViewMode>('text');
   const dispatch = useDispatch();
   const { homeOffense, homeDefense, awayOffense, awayDefense } = useSelector((s: RootState) => s.teams);
   const { result, seed } = useSelector((s: RootState) => s.game);
@@ -30,8 +35,32 @@ export default function App() {
   return (
     <div className="min-h-screen p-4 max-w-5xl mx-auto">
       <h1 className="text-2xl font-bold text-center text-[var(--color-accent)] mb-1">🏀 HoopCraft</h1>
-      <p className="text-center text-[var(--color-text-dim)] text-xs mb-6">Basketball Simulation Engine Prototype</p>
+      <p className="text-center text-[var(--color-text-dim)] text-xs mb-2">Basketball Simulation Engine Prototype</p>
 
+      {/* View Mode Tabs */}
+      <div className="flex justify-center gap-2 mb-4">
+        <button onClick={() => setViewMode('text')}
+          className={`px-4 py-1.5 rounded text-sm font-bold transition-colors border ${
+            viewMode === 'text'
+              ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-dim)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:border-[var(--color-accent)]'
+          }`}>
+          📊 Text Sim
+        </button>
+        <button onClick={() => setViewMode('court')}
+          className={`px-4 py-1.5 rounded text-sm font-bold transition-colors border ${
+            viewMode === 'court'
+              ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-dim)]'
+              : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:border-[var(--color-accent)]'
+          }`}>
+          🏟️ Court View
+        </button>
+      </div>
+
+      {viewMode === 'court' ? (
+        <CourtView />
+      ) : (
+      <>
       {/* Controls */}
       <div className="bg-[var(--color-surface)] rounded border border-[var(--color-border)] p-4 mb-6">
         <div className="flex flex-col md:flex-row gap-6 justify-between mb-4">
@@ -72,6 +101,8 @@ export default function App() {
           <BoxScore stats={result.awayStats} team={bayCityWolves} />
           <PlayByPlay entries={result.playByPlay} />
         </>
+      )}
+      </>
       )}
     </div>
   );
