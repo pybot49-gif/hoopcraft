@@ -22,10 +22,20 @@ const FT_CIRCLE_R = 6;
 const CENTER_CIRCLE_R = 6;
 const HALF_X = COURT_W / 2;
 
-// ── Sim types ──
+// ── Enhanced Sim types ──
 interface Vec2 { x: number; y: number }
 
 type PossessionPhase = 'jumpball' | 'inbound' | 'advance' | 'setup' | 'action' | 'shooting' | 'rebound' | 'freethrow';
+
+interface Movement {
+  driftX: number;
+  driftY: number;
+  speed: number;
+  lastMoveTime: number;
+  isDefensiveSliding: boolean;
+  isCutting: boolean;
+  isScreening: boolean;
+}
 
 interface SimPlayer {
   player: Player;
@@ -39,6 +49,13 @@ interface SimPlayer {
   defendingPlayer?: SimPlayer; // for man defense
   screeningFor?: SimPlayer; // for screens
   rollingToBasket?: boolean; // for pick and roll
+  lastShotContested: number; // timestamp when last contested a shot
+  movement: Movement;
+  ballHandlerMoves: {
+    crossoverCooldown: number;
+    hesitationCooldown: number;
+    lastMoveTime: number;
+  };
 }
 
 interface BallState {
@@ -63,7 +80,11 @@ interface PlayState {
   ballHandler?: SimPlayer;
   screener?: SimPlayer;
   progress: number; // 0-1
+  stage: number; // Current stage of the play
+  stageTimer: number; // Time in current stage
   targetSpots?: Vec2[];
+  passCount: number;
+  lastPassTime: number;
 }
 
 interface GameState {
@@ -86,6 +107,7 @@ interface GameState {
   lastEvent: string;
   play: PlayState;
   gameStarted: boolean;
+  gameTime: number; // Total elapsed game time for animations
 }
 
 // ── Offensive positions (relative to basket, normalized 0-1 of half court) ──
@@ -153,6 +175,21 @@ function initGameState(): GameState {
         hasBall: false,
         fatigue: 0,
         courtIdx: i,
+        lastShotContested: 0,
+        movement: {
+          driftX: 0,
+          driftY: 0,
+          speed: 0,
+          lastMoveTime: 0,
+          isDefensiveSliding: false,
+          isCutting: false,
+          isScreening: false,
+        },
+        ballHandlerMoves: {
+          crossoverCooldown: 0,
+          hesitationCooldown: 0,
+          lastMoveTime: 0,
+        },
       });
     });
   };
@@ -193,8 +230,9 @@ function initGameState(): GameState {
     awayTacticD: 'man',
     rng,
     lastEvent: 'Ready for tip-off...',
-    play: { type: 'none', progress: 0 },
+    play: { type: 'none', progress: 0, stage: 0, stageTimer: 0, passCount: 0, lastPassTime: 0 },
     gameStarted: false,
+    gameTime: 0,
   };
 }
 
@@ -209,20 +247,72 @@ function getOwnBasket(possession: 0 | 1): Vec2 {
   return { x: bx, y: BASKET_Y };
 }
 
-function movePlayerToward(sp: SimPlayer, dt: number) {
-  const dx = sp.targetPos.x - sp.pos.x;
-  const dy = sp.targetPos.y - sp.pos.y;
+// ── Enhanced Movement System ──
+function addCollisionAvoidance(player: SimPlayer, allPlayers: SimPlayer[]) {
+  // Add repulsion force when within 2ft of each other
+  for (const other of allPlayers) {
+    if (other === player) continue;
+    const d = dist(player.pos, other.pos);
+    if (d < 2 && d > 0) {
+      const pushX = (player.pos.x - other.pos.x) / d;
+      const pushY = (player.pos.y - other.pos.y) / d;
+      const strength = (2 - d) * 2; // Stronger push when closer
+      player.targetPos.x += pushX * strength;
+      player.targetPos.y += pushY * strength;
+    }
+  }
+}
+
+function addIdleMovement(player: SimPlayer, gameTime: number) {
+  // Athletes are never completely still - add subtle drift/sway
+  const t = gameTime * 0.5 + player.courtIdx * 1.2; // Different phase for each player
+  player.movement.driftX = Math.sin(t) * 0.5;
+  player.movement.driftY = Math.cos(t * 1.3) * 0.3;
+  
+  // Occasionally add larger repositioning moves
+  if (gameTime - player.movement.lastMoveTime > 2 + Math.random() * 3) {
+    player.movement.lastMoveTime = gameTime;
+    player.targetPos.x += (Math.random() - 0.5) * 4;
+    player.targetPos.y += (Math.random() - 0.5) * 4;
+  }
+}
+
+function movePlayerToward(sp: SimPlayer, dt: number, gameTime: number, allPlayers: SimPlayer[]) {
+  // Add idle movement first
+  addIdleMovement(sp, gameTime);
+  
+  // Apply drift to target position
+  const adjustedTarget = {
+    x: sp.targetPos.x + sp.movement.driftX,
+    y: sp.targetPos.y + sp.movement.driftY
+  };
+  
+  // Add collision avoidance
+  addCollisionAvoidance(sp, allPlayers);
+  
+  const dx = adjustedTarget.x - sp.pos.x;
+  const dy = adjustedTarget.y - sp.pos.y;
   const d = Math.sqrt(dx * dx + dy * dy);
+  
   if (d < 0.3) {
     sp.vel.x *= 0.8;
     sp.vel.y *= 0.8;
     return;
   }
-  const speed = (sp.player.physical.speed / 100) * 12 * (1 - sp.fatigue * 0.3); // feet per tick-second
+  
+  // Enhanced speed calculation based on context
+  let baseSpeed = (sp.player.physical.speed / 100) * 12 * (1 - sp.fatigue * 0.3);
+  
+  // Movement type modifiers
+  if (sp.movement.isDefensiveSliding) baseSpeed *= 0.9; // Sliding is slightly slower
+  if (sp.movement.isCutting) baseSpeed *= 1.2; // Cutting is faster
+  if (sp.hasBall) baseSpeed *= 0.8; // Dribbling slows you down
+  
   const accel = (sp.player.physical.acceleration / 100) * 20;
-  const targetVx = (dx / d) * speed;
-  const targetVy = (dy / d) * speed;
+  const targetVx = (dx / d) * baseSpeed;
+  const targetVy = (dy / d) * baseSpeed;
   const blend = Math.min(1, accel * dt);
+  
   sp.vel.x += (targetVx - sp.vel.x) * blend;
   sp.vel.y += (targetVy - sp.vel.y) * blend;
   sp.pos.x += sp.vel.x * dt;
@@ -232,131 +322,380 @@ function movePlayerToward(sp: SimPlayer, dt: number) {
   sp.fatigue = Math.min(1, sp.fatigue + dt * 0.001 * (1 - sp.player.physical.stamina / 100));
 }
 
-function executePickAndRoll(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
+// ── Enhanced Ball Handler AI ──
+function executeBallHandlerMoves(state: GameState, handler: SimPlayer, defender: SimPlayer | null) {
+  if (!defender) return;
+  
+  const gameTime = state.gameTime;
+  const defDistance = dist(handler.pos, defender.pos);
+  
+  // Dribble moves when defender is close
+  if (defDistance < 6 && gameTime - handler.ballHandlerMoves.lastMoveTime > 1) {
+    const rand = state.rng();
+    
+    // Crossover move
+    if (rand < 0.3 && handler.ballHandlerMoves.crossoverCooldown <= 0) {
+      handler.targetPos.x += (state.rng() - 0.5) * 4;
+      handler.ballHandlerMoves.crossoverCooldown = 2;
+      handler.ballHandlerMoves.lastMoveTime = gameTime;
+      return;
+    }
+    
+    // Hesitation move
+    if (rand < 0.6 && handler.ballHandlerMoves.hesitationCooldown <= 0) {
+      handler.vel.x *= 0.3; // Slow down suddenly
+      handler.vel.y *= 0.3;
+      handler.ballHandlerMoves.hesitationCooldown = 1.5;
+      handler.ballHandlerMoves.lastMoveTime = gameTime;
+      return;
+    }
+    
+    // Between the legs (represented as lateral movement)
+    if (rand < 0.8) {
+      handler.targetPos.y += (state.rng() - 0.5) * 3;
+      handler.ballHandlerMoves.lastMoveTime = gameTime;
+    }
+  }
+  
+  // Reduce cooldowns
+  handler.ballHandlerMoves.crossoverCooldown = Math.max(0, handler.ballHandlerMoves.crossoverCooldown - 0.1);
+  handler.ballHandlerMoves.hesitationCooldown = Math.max(0, handler.ballHandlerMoves.hesitationCooldown - 0.1);
+  
+  // Slow down when defender is directly ahead
+  if (defDistance < 4) {
+    const basket = getTeamBasket(state.possession);
+    const toBasket = { x: basket.x - handler.pos.x, y: basket.y - handler.pos.y };
+    const toDefender = { x: defender.pos.x - handler.pos.x, y: defender.pos.y - handler.pos.y };
+    
+    // Calculate if defender is between handler and basket
+    const dot = (toBasket.x * toDefender.x + toBasket.y * toDefender.y) / 
+                (Math.sqrt(toBasket.x * toBasket.x + toBasket.y * toBasket.y) * Math.sqrt(toDefender.x * toDefender.x + toDefender.y * toDefender.y));
+    
+    if (dot > 0.7) { // Defender is roughly in front
+      handler.vel.x *= 0.6;
+      handler.vel.y *= 0.6;
+    }
+  }
+}
+
+// ── Enhanced Defensive AI ──
+function updateEnhancedDefense(state: GameState, defTeam: SimPlayer[], offTeam: SimPlayer[], basket: Vec2, tacticD: DefenseTactic) {
+  const ballHandler = getBallHandler(state);
+  
+  for (const defender of defTeam) {
+    let assignment: SimPlayer | null = null;
+    
+    // Determine assignment based on defensive tactic
+    switch (tacticD) {
+      case 'man':
+        assignment = offTeam[defender.courtIdx] || offTeam[0];
+        break;
+      case 'zone':
+        // Zone defense - guard area and closest threats
+        assignment = offTeam.reduce((closest, off) => 
+          dist(defender.pos, off.pos) < dist(defender.pos, closest.pos) ? off : closest
+        );
+        break;
+      default:
+        assignment = offTeam[defender.courtIdx] || offTeam[0];
+    }
+    
+    defender.defendingPlayer = assignment;
+    
+    if (!assignment) continue;
+    
+    // Enhanced defensive positioning
+    if (assignment === ballHandler) {
+      // On-ball defense
+      defender.movement.isDefensiveSliding = true;
+      
+      // Stay between ball handler and basket
+      const basketDir = { 
+        x: basket.x - assignment.pos.x, 
+        y: basket.y - assignment.pos.y 
+      };
+      const basketDist = Math.sqrt(basketDir.x * basketDir.x + basketDir.y * basketDir.y);
+      
+      if (basketDist > 0) {
+        basketDir.x /= basketDist;
+        basketDir.y /= basketDist;
+        
+        // Position slightly in front of ball handler toward basket
+        defender.targetPos = {
+          x: assignment.pos.x + basketDir.x * 2,
+          y: assignment.pos.y + basketDir.y * 2
+        };
+      }
+    } else {
+      // Off-ball defense
+      defender.movement.isDefensiveSliding = false;
+      
+      // Help defense - when ball handler drives, step in
+      if (ballHandler && dist(ballHandler.pos, basket) < 15) {
+        const helpPos = {
+          x: ballHandler.pos.x + (basket.x - ballHandler.pos.x) * 0.5,
+          y: ballHandler.pos.y + (basket.y - ballHandler.pos.y) * 0.5
+        };
+        
+        // Weak side help
+        if (dist(defender.pos, helpPos) < 8) {
+          defender.targetPos = helpPos;
+        } else {
+          // Deny passing lane to assignment
+          defender.targetPos = {
+            x: assignment.pos.x + (ballHandler!.pos.x - assignment.pos.x) * 0.3,
+            y: assignment.pos.y + (ballHandler!.pos.y - assignment.pos.y) * 0.3
+          };
+        }
+      } else {
+        // Normal off-ball defense
+        defender.targetPos = {
+          x: assignment.pos.x + (basket.x - assignment.pos.x) * 0.3,
+          y: assignment.pos.y + (basket.y - assignment.pos.y) * 0.2
+        };
+      }
+    }
+    
+    // Closeout on shooters - when assignment gets the ball, sprint at them
+    if (assignment === ballHandler && state.play.lastPassTime > 0 && 
+        state.gameTime - state.play.lastPassTime < 1) {
+      defender.movement.speed = 1.5; // Sprint to close out
+      const closeoutDist = Math.max(3, dist(defender.pos, assignment.pos) - 2);
+      const closeoutDir = {
+        x: (assignment.pos.x - defender.pos.x) / dist(defender.pos, assignment.pos),
+        y: (assignment.pos.y - defender.pos.y) / dist(defender.pos, assignment.pos)
+      };
+      defender.targetPos = {
+        x: assignment.pos.x - closeoutDir.x * closeoutDist,
+        y: assignment.pos.y - closeoutDir.y * closeoutDist
+      };
+    }
+    
+    // Contest shots - sprint at shooter when shot goes up
+    if (state.phase === 'shooting' && assignment === ballHandler) {
+      defender.targetPos = { ...assignment.pos };
+      defender.lastShotContested = state.gameTime;
+    }
+  }
+}
+
+// ── Enhanced Play Execution System ──
+function executePickAndRollStages(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
   if (state.play.type !== 'pickandroll') return;
 
   const ballHandler = state.play.ballHandler || getBallHandler(state);
   const screener = state.play.screener;
   if (!ballHandler || !screener) return;
 
-  const progress = Math.min(1, state.play.progress + 0.02);
-  state.play.progress = progress;
+  state.play.stageTimer += 0.1;
+  
+  switch (state.play.stage) {
+    case 0: // Stage 1: Screener walks up to set screen (2s)
+      screener.movement.isScreening = true;
+      screener.targetPos = {
+        x: ballHandler.pos.x + dir * 3,
+        y: ballHandler.pos.y + (state.rng() > 0.5 ? 3 : -3)
+      };
+      
+      if (state.play.stageTimer > 2) {
+        state.play.stage = 1;
+        state.play.stageTimer = 0;
+      }
+      break;
+      
+    case 1: // Stage 2: Screen is set, ball handler uses it (1s)
+      ballHandler.targetPos = {
+        x: screener.pos.x + dir * 3,
+        y: screener.pos.y
+      };
+      
+      if (state.play.stageTimer > 1) {
+        state.play.stage = 2;
+        state.play.stageTimer = 0;
+      }
+      break;
+      
+    case 2: // Stage 3: Read & React (2s)
+      const defenderOnBall = findDefender(ballHandler, state);
+      const defenderOnScreener = findDefender(screener, state);
+      
+      // Screener rolls to basket
+      screener.rollingToBasket = true;
+      screener.targetPos = {
+        x: basket.x - dir * 8,
+        y: basket.y + (state.rng() - 0.5) * 6
+      };
+      
+      // Decision tree based on defense
+      if (defenderOnScreener && dist(defenderOnScreener.pos, screener.pos) > 8) {
+        // Pass to rolling screener
+        if (state.rng() < 0.4 && state.play.stageTimer > 0.5) {
+          passBall(state, ballHandler, screener);
+          return;
+        }
+      }
+      
+      if (dist(ballHandler.pos, basket) < 18 && state.rng() < 0.3 && state.play.stageTimer > 1) {
+        // Pull-up jumper
+        attemptShot(state, ballHandler, basket);
+        return;
+      }
+      
+      if (state.play.stageTimer > 2) {
+        // End play - either shoot or reset
+        if (state.rng() < 0.5) {
+          attemptShot(state, ballHandler, basket);
+        } else {
+          state.play.type = 'none';
+        }
+      }
+      break;
+  }
+}
 
-  if (progress < 0.3) {
-    // Set screen
-    screener.targetPos = {
-      x: ballHandler.pos.x + dir * 3,
-      y: ballHandler.pos.y + (state.rng() > 0.5 ? 3 : -3)
-    };
-  } else if (progress < 0.6) {
-    // Use screen
-    ballHandler.targetPos = {
-      x: screener.pos.x + dir * 2,
-      y: screener.pos.y
-    };
-    // Screener starts to roll
-    screener.rollingToBasket = true;
-    screener.targetPos = {
-      x: basket.x - dir * 8,
-      y: basket.y + (state.rng() - 0.5) * 6
-    };
-  } else {
-    // Read defense and execute
-    const defenderOnBall = findDefender(ballHandler, state);
-    const defenderOnScreener = findDefender(screener, state);
+function executeMotionOffenseStages(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
+  if (state.play.type !== 'motion') return;
+
+  state.play.stageTimer += 0.1;
+  
+  // Continuous ball movement - pass every 2-3 seconds
+  const ballHandler = getBallHandler(state);
+  if (ballHandler && state.play.stageTimer > 2.5 && state.play.passCount < 4) {
+    const openPlayers = offTeam.filter(p => {
+      if (p === ballHandler) return false;
+      const defender = findDefender(p, state);
+      return !defender || dist(defender.pos, p.pos) > 5;
+    });
     
-    if (defenderOnScreener && dist(defenderOnScreener.pos, screener.pos) > 8) {
-      // Pass to rolling big
-      if (state.rng() < 0.4) {
-        passBall(state, ballHandler, screener);
+    if (openPlayers.length > 0 && state.rng() < 0.7) {
+      const target = openPlayers[Math.floor(state.rng() * openPlayers.length)];
+      passBall(state, ballHandler, target);
+      state.play.passCount++;
+      state.play.lastPassTime = state.gameTime;
+      state.play.stageTimer = 0; // Reset timer after pass
+      return;
+    }
+  }
+  
+  // After 3-4 passes, look for the shot
+  if (state.play.passCount >= 3 || state.play.stageTimer > 8) {
+    if (ballHandler) {
+      const distToBasket = dist(ballHandler.pos, basket);
+      const defender = findDefender(ballHandler, state);
+      const isOpen = !defender || dist(defender.pos, ballHandler.pos) > 6;
+      
+      if (isOpen && distToBasket < 25 && state.rng() < 0.6) {
+        attemptShot(state, ballHandler, basket);
         return;
       }
     }
+  }
+  
+  // Continuous off-ball movement - cuts and screens
+  for (let i = 0; i < offTeam.length; i++) {
+    const p = offTeam[i];
+    if (p.hasBall) continue;
     
-    if (dist(ballHandler.pos, basket) < 18 && state.rng() < 0.3) {
-      // Pull-up jumper
-      attemptShot(state, ballHandler, basket);
-    } else if (state.rng() < 0.2) {
-      // Drive to basket
-      ballHandler.targetPos = {
+    // Create cutting patterns
+    const t = (state.play.stageTimer + i * 0.5) % 4; // 4-second cycles
+    p.movement.isCutting = true;
+    
+    if (t < 1) {
+      // Cut to basket
+      p.targetPos = {
         x: basket.x - dir * 8,
-        y: basket.y + (state.rng() - 0.5) * 8
+        y: basket.y + (i - 2) * 4
+      };
+    } else if (t < 2) {
+      // Cut to corner
+      p.targetPos = {
+        x: basket.x - dir * 20,
+        y: BASKET_Y + (i % 2 === 0 ? 15 : -15)
+      };
+    } else {
+      // Rotate to new position
+      p.targetPos = {
+        x: basket.x - dir * (15 + (i * 3)),
+        y: BASKET_Y + Math.sin(t + i) * 12
       };
     }
   }
 }
 
-function executeMotionOffense(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
-  if (state.play.type !== 'motion') return;
-
-  const progress = Math.min(1, state.play.progress + 0.015);
-  state.play.progress = progress;
-
-  // Continuous movement
-  for (let i = 0; i < offTeam.length; i++) {
-    const p = offTeam[i];
-    if (p.hasBall) continue;
-
-    // Create movement patterns
-    const t = (progress + i * 0.2) % 1;
-    const angle = t * Math.PI * 2;
-    const radius = 8 + i * 2;
-    
-    p.targetPos = {
-      x: basket.x - dir * (15 + Math.cos(angle) * radius),
-      y: basket.y + Math.sin(angle) * radius
-    };
-  }
-
-  // Ball movement
-  const ballHandler = getBallHandler(state);
-  if (ballHandler && state.rng() < 0.08) {
-    const nearbyOpen = offTeam.filter(p => 
-      p !== ballHandler && 
-      dist(p.pos, ballHandler.pos) < 20 &&
-      !findDefender(p, state) || dist(findDefender(p, state)!.pos, p.pos) > 5
-    );
-    if (nearbyOpen.length > 0) {
-      const target = nearbyOpen[Math.floor(state.rng() * nearbyOpen.length)];
-      passBall(state, ballHandler, target);
-    }
-  }
-}
-
-function executeIsoPlay(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
+function executeIsoPlayStages(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
   if (state.play.type !== 'iso') return;
 
   const ballHandler = getBallHandler(state);
   if (!ballHandler) return;
 
-  // Clear out other players
-  for (const p of offTeam) {
-    if (p === ballHandler) continue;
-    p.targetPos = {
-      x: basket.x - dir * (25 + (p.courtIdx - 2) * 5),
-      y: BASKET_Y + (p.courtIdx - 2) * 12
-    };
-  }
-
-  // Iso player goes 1v1
-  const defender = findDefender(ballHandler, state);
-  if (defender) {
-    if (dist(ballHandler.pos, basket) < 15) {
-      ballHandler.targetPos = {
-        x: basket.x - dir * 2,
-        y: basket.y + (state.rng() - 0.5) * 4
-      };
-    } else {
-      // Jab step, crossover moves
-      ballHandler.targetPos = {
-        x: ballHandler.pos.x + (state.rng() - 0.5) * 3,
-        y: ballHandler.pos.y + (state.rng() - 0.5) * 3
-      };
-    }
+  state.play.stageTimer += 0.1;
+  
+  switch (state.play.stage) {
+    case 0: // Stage 1: Clear out (2s)
+      for (const p of offTeam) {
+        if (p === ballHandler) continue;
+        p.targetPos = {
+          x: basket.x - dir * (25 + (p.courtIdx - 2) * 5),
+          y: BASKET_Y + (p.courtIdx - 2) * 12
+        };
+      }
+      
+      if (state.play.stageTimer > 2) {
+        state.play.stage = 1;
+        state.play.stageTimer = 0;
+      }
+      break;
+      
+    case 1: // Stage 2: 1v1 work (3-5s)
+      const defender = findDefender(ballHandler, state);
+      const distToBasket = dist(ballHandler.pos, basket);
+      
+      if (distToBasket < 15) {
+        // Drive to basket
+        ballHandler.targetPos = {
+          x: basket.x - dir * 4,
+          y: basket.y + (state.rng() - 0.5) * 6
+        };
+      } else {
+        // Jab step, crossover moves
+        executeBallHandlerMoves(state, ballHandler, defender);
+      }
+      
+      if (state.play.stageTimer > 5 || distToBasket < 8) {
+        state.play.stage = 2;
+        state.play.stageTimer = 0;
+      }
+      break;
+      
+    case 2: // Stage 3: Shoot or kick out
+      if (state.rng() < 0.8) {
+        attemptShot(state, ballHandler, basket);
+      } else {
+        // Look for kick out if double-teamed
+        const nearbyDefenders = state.players.filter(p => 
+          p.teamIdx !== state.possession && dist(p.pos, ballHandler.pos) < 8
+        );
+        
+        if (nearbyDefenders.length > 1) {
+          const openTeammates = offTeam.filter(p => {
+            if (p === ballHandler) return false;
+            const def = findDefender(p, state);
+            return !def || dist(def.pos, p.pos) > 8;
+          });
+          
+          if (openTeammates.length > 0) {
+            const target = openTeammates[0];
+            passBall(state, ballHandler, target);
+            return;
+          }
+        }
+        attemptShot(state, ballHandler, basket);
+      }
+      break;
   }
 }
 
-function executeFastBreak(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
+function executeFastBreakStages(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
   if (state.play.type !== 'fastbreak') return;
 
   const ballHandler = getBallHandler(state);
@@ -370,26 +709,34 @@ function executeFastBreak(state: GameState, offTeam: SimPlayer[], basket: Vec2, 
 
   // Wings fill lanes
   if (offTeam.length >= 3) {
-    offTeam[1].targetPos = { x: basket.x - dir * 18, y: basket.y - 15 }; // Left wing
-    offTeam[2].targetPos = { x: basket.x - dir * 18, y: basket.y + 15 }; // Right wing
+    offTeam[1].targetPos = { x: basket.x - dir * 18, y: basket.y - 15 };
+    offTeam[2].targetPos = { x: basket.x - dir * 18, y: basket.y + 15 };
   }
 
-  // Trailing bigs
-  for (let i = 3; i < offTeam.length; i++) {
-    offTeam[i].targetPos = {
-      x: ballHandler.pos.x - dir * 10,
-      y: basket.y + (i - 3) * 8 - 4
-    };
+  // Check for numbers advantage
+  const defenseBack = state.players.filter(p => 
+    p.teamIdx !== state.possession && 
+    Math.abs(p.pos.x - basket.x) < 20
+  ).length;
+  
+  const offenseAhead = offTeam.filter(p => 
+    Math.abs(p.pos.x - basket.x) < 25
+  ).length;
+  
+  if (offenseAhead > defenseBack && dist(ballHandler.pos, basket) < 20) {
+    // Attack immediately on numbers advantage
+    attemptShot(state, ballHandler, basket);
   }
 }
 
-function executeInsidePlay(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
+function executeInsidePlayStages(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number) {
   if (state.play.type !== 'inside') return;
 
-  // Get the big man (usually center or PF)
   const bigMan = offTeam[4] || offTeam[3]; // C or PF
   if (!bigMan) return;
 
+  state.play.stageTimer += 0.1;
+  
   // Post up
   bigMan.targetPos = {
     x: basket.x - dir * 8,
@@ -398,8 +745,20 @@ function executeInsidePlay(state: GameState, offTeam: SimPlayer[], basket: Vec2,
 
   // Entry pass
   const ballHandler = getBallHandler(state);
-  if (ballHandler && ballHandler !== bigMan && dist(ballHandler.pos, bigMan.pos) < 20 && state.rng() < 0.1) {
+  if (ballHandler && ballHandler !== bigMan && 
+      dist(ballHandler.pos, bigMan.pos) < 20 && 
+      state.play.stageTimer > 1 && state.rng() < 0.15) {
     passBall(state, ballHandler, bigMan);
+    state.play.lastPassTime = state.gameTime;
+    return;
+  }
+
+  // If big man has the ball in the post
+  if (bigMan.hasBall && dist(bigMan.pos, basket) < 12) {
+    if (state.play.stageTimer > 2) {
+      // Back down defender and shoot
+      attemptShot(state, bigMan, basket);
+    }
   }
 
   // Other players space out
@@ -412,44 +771,54 @@ function executeInsidePlay(state: GameState, offTeam: SimPlayer[], basket: Vec2,
   }
 }
 
-function setupPlay(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number): void {
+function setupEnhancedPlay(state: GameState, offTeam: SimPlayer[], basket: Vec2, dir: number): void {
   const tacticO = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
   const ballHandler = getBallHandler(state);
   
-  // Determine play type based on tactic and situation
-  let playType: PlayState['type'] = 'none';
+  // Reset play state
+  state.play = {
+    type: 'none',
+    progress: 0,
+    stage: 0,
+    stageTimer: 0,
+    passCount: 0,
+    lastPassTime: 0,
+    ballHandler: ballHandler || undefined
+  };
   
+  // Determine play type based on tactic and situation
   switch (tacticO) {
     case 'fast_break':
       if (state.phase === 'advance' || (state.phaseTicks < 10 && state.shotClock > 20)) {
-        playType = 'fastbreak';
+        state.play.type = 'fastbreak';
+      } else {
+        state.play.type = 'motion'; // Fall back to motion
       }
       break;
     case 'motion':
-      playType = 'motion';
+      state.play.type = 'motion';
       break;
     case 'iso':
       if (ballHandler?.player.isSuperstar) {
-        playType = 'iso';
+        state.play.type = 'iso';
+      } else {
+        state.play.type = 'motion';
       }
       break;
     case 'inside':
-      playType = 'inside';
+      state.play.type = 'inside';
       break;
     case 'shoot':
-      // Quick shots, no specific play
+      // Quick motion offense
+      state.play.type = 'motion';
       break;
   }
 
-  // Pick and roll is common for many tactics
-  if (playType === 'none' && state.rng() < 0.3) {
-    playType = 'pickandroll';
+  // Pick and roll is common addition
+  if (state.play.type === 'motion' && state.rng() < 0.4) {
+    state.play.type = 'pickandroll';
     state.play.screener = offTeam.find(p => p.player.position === 'C' || p.player.position === 'PF');
   }
-
-  state.play.type = playType;
-  state.play.ballHandler = ballHandler || undefined;
-  state.play.progress = 0;
 }
 
 function findDefender(offensivePlayer: SimPlayer, state: GameState): SimPlayer | null {
@@ -472,6 +841,7 @@ function findDefender(offensivePlayer: SimPlayer, state: GameState): SimPlayer |
 function tick(state: GameState): GameState {
   const dt = 0.1; // game seconds per tick
   state.phaseTicks++;
+  state.gameTime += dt;
 
   // Clock
   if (state.phase !== 'jumpball' && state.gameStarted) {
@@ -578,11 +948,13 @@ function tick(state: GameState): GameState {
     }
     
     // Move players even during flight
-    for (const p of state.players) movePlayerToward(p, dt);
+    for (const p of state.players) {
+      movePlayerToward(p, dt, state.gameTime, state.players);
+    }
     return state;
   }
 
-  // Phase logic
+  // Enhanced Phase logic
   switch (state.phase) {
     case 'jumpball': {
       // Position players around center court for jump ball
@@ -619,41 +991,64 @@ function tick(state: GameState): GameState {
       break;
     }
     case 'inbound': {
-      // Made basket inbound
+      // Enhanced inbound with actual passing
       const ownBasket = getOwnBasket(state.possession);
-      const inbounder = offTeam[0]; // Usually PG
       
-      // Inbounder at baseline
-      inbounder.targetPos = { 
-        x: ownBasket.x + (dir > 0 ? -8 : 8), 
-        y: BASKET_Y + (state.rng() - 0.5) * 20 
-      };
-      
-      clearBallCarrier(state);
-      inbounder.hasBall = true;
-      state.ball.carrier = inbounder;
-      
-      // Other offensive players spread out to receive
-      for (let i = 1; i < offTeam.length; i++) {
-        offTeam[i].targetPos = { 
-          x: ownBasket.x + dir * (10 + i * 4), 
-          y: BASKET_Y + (i - 2) * 8 
+      if (state.phaseTicks < 10) {
+        // Stage 1: Players transition to their positions
+        const inbounder = offTeam[0];
+        inbounder.targetPos = { 
+          x: ownBasket.x + (dir > 0 ? -5 : 5), 
+          y: BASKET_Y + (state.rng() - 0.5) * 15
         };
-      }
-      
-      // Defensive pressure
-      const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
-      if (tacticD === 'press') {
-        for (let i = 0; i < defTeam.length; i++) {
-          const target = offTeam[Math.min(i, offTeam.length - 1)];
-          defTeam[i].targetPos = {
-            x: target.pos.x + (ownBasket.x - target.pos.x) * 0.3,
-            y: target.pos.y
+        
+        clearBallCarrier(state);
+        inbounder.hasBall = true;
+        state.ball.carrier = inbounder;
+        
+        for (let i = 1; i < offTeam.length; i++) {
+          offTeam[i].targetPos = { 
+            x: ownBasket.x + dir * (8 + i * 3), 
+            y: BASKET_Y + (i - 2.5) * 7 
           };
+        }
+        
+        // Defense applies pressure
+        const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
+        if (tacticD === 'press') {
+          for (let i = 0; i < defTeam.length; i++) {
+            const target = offTeam[Math.min(i, offTeam.length - 1)];
+            defTeam[i].targetPos = {
+              x: target.targetPos.x + (ownBasket.x - target.targetPos.x) * 0.4,
+              y: target.targetPos.y
+            };
+          }
+        }
+      } else if (state.phaseTicks < 25) {
+        // Stage 2: Receiver cuts toward ball
+        const receiver = offTeam[1]; // Usually PG or best ball handler
+        receiver.movement.isCutting = true;
+        receiver.targetPos = {
+          x: state.ball.pos.x + dir * 8,
+          y: state.ball.pos.y + (state.rng() - 0.5) * 6
+        };
+      } else {
+        // Stage 3: Actual inbound pass
+        const inbounder = getBallHandler(state);
+        if (inbounder) {
+          const receiver = offTeam.find(p => p !== inbounder && dist(p.pos, inbounder.pos) < 15);
+          
+          if (receiver && state.rng() < 0.8) {
+            passBall(state, inbounder, receiver);
+            state.lastEvent = 'Inbound pass complete';
+            state.phase = 'advance';
+            state.phaseTicks = 0;
+          }
         }
       }
       
-      if (state.phaseTicks > 15) {
+      if (state.phaseTicks > 40) {
+        // Force advance if inbound takes too long
         state.phase = 'advance';
         state.phaseTicks = 0;
       }
@@ -662,20 +1057,31 @@ function tick(state: GameState): GameState {
     case 'advance': {
       const handler = getBallHandler(state);
       if (handler) {
-        // Advance to half court or beyond
+        // PG dribbles up court with enhanced movement
         const targetX = state.play.type === 'fastbreak' ? 
-          basket.x - dir * 20 : // Fast break - push further
-          HALF_X + dir * 8;     // Normal advance
+          basket.x - dir * 20 : 
+          HALF_X + dir * 12;
           
         handler.targetPos = { x: targetX, y: BASKET_Y };
         
-        // Check for fast break opportunity
-        const defenseBack = defTeam.every(d => d.pos.x * dir < (HALF_X + dir * 10));
-        if (!defenseBack && state.rng() < 0.3) {
-          state.play.type = 'fastbreak';
+        // Execute ball handler moves while advancing
+        const defender = findDefender(handler, state);
+        executeBallHandlerMoves(state, handler, defender);
+        
+        // Other players spread to offensive half
+        for (let i = 0; i < offTeam.length; i++) {
+          if (offTeam[i] === handler) continue;
+          offTeam[i].targetPos = {
+            x: HALF_X + dir * (8 + i * 4),
+            y: BASKET_Y + (i - 2) * 8
+          };
         }
         
-        if (Math.abs(handler.pos.x - HALF_X) < 12) {
+        // Defense matches up during transition
+        updateEnhancedDefense(state, defTeam, offTeam, basket, 
+          state.possession === 0 ? state.awayTacticD : state.homeTacticD);
+        
+        if (Math.abs(handler.pos.x - HALF_X) > 8) {
           state.phase = 'setup';
           state.phaseTicks = 0;
         }
@@ -683,25 +1089,32 @@ function tick(state: GameState): GameState {
       break;
     }
     case 'setup': {
-      // Set up offensive and defensive positions
+      // Enhanced setup with intelligent positioning
       const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
       const spots = getOffenseSpots(basket.x, dir);
       
+      // Set offensive positions with variation
       for (let i = 0; i < offTeam.length; i++) {
-        offTeam[i].targetPos = { ...spots[i] };
-        // Add some randomness
-        offTeam[i].targetPos.x += (state.rng() - 0.5) * 3;
-        offTeam[i].targetPos.y += (state.rng() - 0.5) * 3;
+        offTeam[i].targetPos = {
+          x: spots[i].x + (state.rng() - 0.5) * 4,
+          y: spots[i].y + (state.rng() - 0.5) * 4
+        };
       }
       
-      const defSpots = getDefenseSpots(spots, basket.x, tacticD);
-      for (let i = 0; i < defTeam.length; i++) {
-        defTeam[i].targetPos = { ...defSpots[i] };
+      // Set defensive positions
+      updateEnhancedDefense(state, defTeam, offTeam, basket, tacticD);
+      
+      // Ball handler holds at top, surveys defense
+      const handler = getBallHandler(state);
+      if (handler) {
+        handler.targetPos = {
+          x: basket.x - dir * 28,
+          y: BASKET_Y + (state.rng() - 0.5) * 4
+        };
       }
       
       if (state.phaseTicks > 20) {
-        // Set up the play
-        setupPlay(state, offTeam, basket, dir);
+        setupEnhancedPlay(state, offTeam, basket, dir);
         state.phase = 'action';
         state.phaseTicks = 0;
       }
@@ -715,76 +1128,107 @@ function tick(state: GameState): GameState {
         break; 
       }
 
-      // Execute specific plays
+      // Execute specific play stages
       switch (state.play.type) {
         case 'pickandroll':
-          executePickAndRoll(state, offTeam, basket, dir);
+          executePickAndRollStages(state, offTeam, basket, dir);
           break;
         case 'motion':
-          executeMotionOffense(state, offTeam, basket, dir);
+          executeMotionOffenseStages(state, offTeam, basket, dir);
           break;
         case 'iso':
-          executeIsoPlay(state, offTeam, basket, dir);
+          executeIsoPlayStages(state, offTeam, basket, dir);
           break;
         case 'fastbreak':
-          executeFastBreak(state, offTeam, basket, dir);
+          executeFastBreakStages(state, offTeam, basket, dir);
           break;
         case 'inside':
-          executeInsidePlay(state, offTeam, basket, dir);
+          executeInsidePlayStages(state, offTeam, basket, dir);
           break;
       }
 
+      // Enhanced ball handler AI
+      const defender = findDefender(handler, state);
+      executeBallHandlerMoves(state, handler, defender);
+      
+      // Enhanced decision logic with shot selection intelligence
       const distToBasket = dist(handler.pos, basket);
-
-      // Decision logic with tactic modifiers
-      const tacticO = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
-      const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
-      const advantage = getTacticAdvantage(tacticO, tacticD);
+      const isOpen = !defender || dist(defender.pos, handler.pos) > 6;
+      const timeUrgency = state.phaseTicks > 150 || state.shotClock < 8;
+      const shotClockPressure = state.shotClock < 5;
       
-      const roll = state.rng();
-      const timeUrgency = state.phaseTicks > 60 || state.shotClock < 8;
-      
-      if (timeUrgency) {
+      // Intelligent shot selection
+      if (timeUrgency || shotClockPressure) {
         // Forced action
-        if (distToBasket < 25 || state.shotClock < 3) {
+        if (isOpen && distToBasket < 25) {
           attemptShot(state, handler, basket);
+        } else if (distToBasket < 12) {
+          attemptShot(state, handler, basket); // Take contested shot near basket
         } else {
+          // Look for emergency pass
+          const openTeammates = offTeam.filter(p => {
+            if (p === handler) return false;
+            const def = findDefender(p, state);
+            return !def || dist(def.pos, p.pos) > 4;
+          });
+          if (openTeammates.length > 0) {
+            passBall(state, handler, openTeammates[0]);
+          } else {
+            attemptShot(state, handler, basket);
+          }
+        }
+      } else {
+        // Normal action decision tree - much more active
+        const roll = state.rng();
+        
+        // Open shot opportunity
+        if (isOpen && distToBasket < 24 && roll < 0.4) {
+          attemptShot(state, handler, basket);
+        }
+        // Pass opportunity (increased frequency)
+        else if (roll < 0.6 && state.play.passCount < 4) {
+          const passTargets = offTeam.filter(p => {
+            if (p === handler) return false;
+            const def = findDefender(p, state);
+            const passLane = !isPassLaneBlocked(handler, p, state);
+            return passLane && (!def || dist(def.pos, p.pos) > 4);
+          });
+          
+          if (passTargets.length > 0) {
+            const target = passTargets[Math.floor(state.rng() * passTargets.length)];
+            passBall(state, handler, target);
+          }
+        }
+        // Drive to basket
+        else if (roll < 0.8 && distToBasket > 12) {
           driveToBasket(state, handler, basket, dir);
         }
-      } else if (tacticO === 'shoot' && roll < 0.08) {
-        // Shoot-first offense
-        attemptShot(state, handler, basket);
-      } else if (roll < 0.02 + advantage * 0.5) {
-        attemptShot(state, handler, basket);
-      } else if (roll < 0.06 && state.play.type !== 'iso') {
-        // Pass (less likely in ISO)
-        const passTargets = offTeam.filter(p => p !== handler);
-        if (passTargets.length > 0) {
-          const target = passTargets[Math.floor(state.rng() * passTargets.length)];
-          passBall(state, handler, target);
+        // Contested shot if clock is running down
+        else if (state.shotClock < 12 && distToBasket < 25) {
+          attemptShot(state, handler, basket);
         }
-      } else if (roll < 0.1) {
-        driveToBasket(state, handler, basket, dir);
-      } else {
-        // Check for steal with defensive tactic modifiers
-        const nearestDef = defTeam.reduce((best, d) =>
-          dist(d.pos, handler.pos) < dist(best.pos, handler.pos) ? d : best, defTeam[0]);
-        let stealChance = skillModifier(nearestDef.player.skills.defense.steal) * 0.015;
+      }
+
+      // Enhanced steal mechanics
+      if (defender && dist(defender.pos, handler.pos) < 3) {
+        let stealChance = skillModifier(defender.player.skills.defense.steal) * 0.02; // Increased base chance
         
-        if (tacticD === 'gamble') stealChance *= 1.5;
-        if (tacticD === 'press') stealChance *= 1.2;
+        const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
+        if (tacticD === 'gamble') stealChance *= 2;
+        if (tacticD === 'press') stealChance *= 1.5;
         
-        if (dist(nearestDef.pos, handler.pos) < 3 && state.rng() < stealChance) {
+        if (state.rng() < stealChance) {
           clearBallCarrier(state);
-          nearestDef.hasBall = true;
-          state.ball.carrier = nearestDef;
-          state.lastEvent = `${nearestDef.player.name} steals the ball!`;
+          defender.hasBall = true;
+          state.ball.carrier = defender;
+          state.lastEvent = `${defender.player.name} steals the ball!`;
           changePossession(state, '');
         }
       }
 
-      // Move defenders based on tactic
-      updateDefensePositions(state, defTeam, offTeam, basket, tacticD);
+      // Update enhanced defense
+      updateEnhancedDefense(state, defTeam, offTeam, basket, 
+        state.possession === 0 ? state.awayTacticD : state.homeTacticD);
       break;
     }
     case 'shooting': {
@@ -796,19 +1240,38 @@ function tick(state: GameState): GameState {
       break;
     }
     case 'rebound': {
-      // All players converge on ball with rebounding skill
+      // Enhanced rebounding with body physics
+      const reboundPos = { ...state.ball.pos };
+      
       for (const p of state.players) {
+        const distToRebound = dist(p.pos, reboundPos);
+        // Players converge with collision avoidance
         p.targetPos = { 
-          x: state.ball.pos.x + (state.rng() - 0.5) * 4, 
-          y: state.ball.pos.y + (state.rng() - 0.5) * 4 
+          x: reboundPos.x + (state.rng() - 0.5) * 6, 
+          y: reboundPos.y + (state.rng() - 0.5) * 6
         };
+        
+        // Box out mechanics - defenders try to get between offensive players and basket
+        if (p.teamIdx !== state.possession) {
+          const nearestOff = offTeam.reduce((closest, off) => 
+            dist(p.pos, off.pos) < dist(p.pos, closest.pos) ? off : closest
+          );
+          
+          if (dist(p.pos, nearestOff.pos) < 4) {
+            // Box out - get between offensive player and rebound
+            p.targetPos = {
+              x: nearestOff.pos.x + (reboundPos.x - nearestOff.pos.x) * 0.5,
+              y: nearestOff.pos.y + (reboundPos.y - nearestOff.pos.y) * 0.5
+            };
+          }
+        }
       }
       
-      if (state.phaseTicks > 8) {
-        // Determine who gets rebound based on position, size, and skill
+      if (state.phaseTicks > 12) {
+        // Determine rebounder with enhanced logic
         const nearPlayers = [...state.players]
-          .sort((a, b) => dist(a.pos, state.ball.pos) - dist(b.pos, state.ball.pos))
-          .slice(0, 5); // Top 5 closest players compete
+          .sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos))
+          .slice(0, 6); // Top 6 closest players compete
           
         let rebounder: SimPlayer | null = null;
         let bestReboundValue = 0;
@@ -816,11 +1279,13 @@ function tick(state: GameState): GameState {
         for (const p of nearPlayers) {
           const rebSkill = p.player.skills.athletic.rebounding;
           const height = p.player.physical.height;
-          const position = dist(p.pos, state.ball.pos);
+          const position = dist(p.pos, reboundPos);
+          const boxOutAdvantage = p.teamIdx !== state.possession ? 1.2 : 1.0; // Slight defensive rebounding advantage
           
           const reboundValue = skillModifier(rebSkill) * 
             (height / 200) * 
             (10 - position) * // Closer is better
+            boxOutAdvantage *
             state.rng();
             
           if (reboundValue > bestReboundValue) {
@@ -851,9 +1316,14 @@ function tick(state: GameState): GameState {
     }
   }
 
-  // Move all players
+  // Move all players with enhanced movement
   for (const p of state.players) {
-    movePlayerToward(p, dt);
+    movePlayerToward(p, dt, state.gameTime, state.players);
+    
+    // Reset per-frame movement flags
+    p.movement.isDefensiveSliding = false;
+    p.movement.isCutting = false;
+    p.movement.isScreening = false;
     
     // Reset rolling state if play is over
     if (state.play.type !== 'pickandroll') {
@@ -869,86 +1339,17 @@ function tick(state: GameState): GameState {
   return state;
 }
 
-function updateDefensePositions(
-  state: GameState, 
-  defTeam: SimPlayer[], 
-  offTeam: SimPlayer[], 
-  basket: Vec2, 
-  tacticD: DefenseTactic
-) {
-  const ballHandler = getBallHandler(state);
+function isPassLaneBlocked(from: SimPlayer, to: SimPlayer, state: GameState): boolean {
+  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  const passLine = { from: from.pos, to: to.pos };
   
-  switch (tacticD) {
-    case 'man':
-      // Assign each defender to an offensive player
-      for (let i = 0; i < defTeam.length && i < offTeam.length; i++) {
-        const defender = defTeam[i];
-        const assignment = offTeam[i];
-        defender.targetPos = {
-          x: assignment.pos.x + (basket.x - assignment.pos.x) * 0.3,
-          y: assignment.pos.y + (basket.y - assignment.pos.y) * 0.2
-        };
-        defender.defendingPlayer = assignment;
-      }
-      break;
-      
-    case 'zone':
-      // Shift zone based on ball position
-      if (ballHandler) {
-        const zoneShift = {
-          x: (ballHandler.pos.x - basket.x) * 0.3,
-          y: (ballHandler.pos.y - basket.y) * 0.3
-        };
-        
-        const baseSpots = getDefenseSpots([], basket.x, tacticD);
-        for (let i = 0; i < defTeam.length; i++) {
-          defTeam[i].targetPos = {
-            x: baseSpots[i].x + zoneShift.x,
-            y: baseSpots[i].y + zoneShift.y
-          };
-        }
-      }
-      break;
-      
-    case 'press':
-      // Full court pressure
-      for (let i = 0; i < defTeam.length && i < offTeam.length; i++) {
-        const defender = defTeam[i];
-        const target = offTeam[i];
-        defender.targetPos = {
-          x: target.pos.x - (target.pos.x - basket.x) * 0.1, // Stay between target and their basket
-          y: target.pos.y
-        };
-      }
-      break;
-      
-    case 'gamble':
-      // Aggressive, go for steals
-      if (ballHandler) {
-        const ballDefender = defTeam[0];
-        ballDefender.targetPos = {
-          x: ballHandler.pos.x + (state.rng() - 0.5) * 2,
-          y: ballHandler.pos.y + (state.rng() - 0.5) * 2
-        };
-        
-        // Others play help defense
-        for (let i = 1; i < defTeam.length; i++) {
-          defTeam[i].targetPos = {
-            x: basket.x - (basket.x > HALF_X ? 12 : -12),
-            y: basket.y + (i - 2) * 6
-          };
-        }
-      }
-      break;
-      
-    case 'fortress':
-      // Pack the paint, give up perimeter
-      const baseSpots = getDefenseSpots([], basket.x, tacticD);
-      for (let i = 0; i < defTeam.length; i++) {
-        defTeam[i].targetPos = { ...baseSpots[i] };
-      }
-      break;
+  for (const def of defTeam) {
+    const distToLine = distanceToLine(def.pos, passLine);
+    if (distToLine < 2.5) {
+      return true;
+    }
   }
+  return false;
 }
 
 function getBallHandler(state: GameState): SimPlayer | null {
@@ -981,20 +1382,34 @@ function attemptShot(state: GameState, handler: SimPlayer, basket: Vec2) {
   
   let basePct = distToBasket > 22 ? 0.35 : distToBasket > 10 ? 0.45 : 0.60;
   
-  // Contest from nearest defender
+  // Enhanced shot contest system
   const nearestDef = state.players
     .filter(p => p.teamIdx !== state.possession)
     .reduce((best, d) => dist(d.pos, handler.pos) < dist(best.pos, handler.pos) ? d : best);
     
   const contestDistance = dist(nearestDef.pos, handler.pos);
-  if (contestDistance < 4) {
-    basePct *= 0.7; // Heavy contest
+  let contestModifier = 1.0;
+  
+  if (contestDistance < 3) {
+    contestModifier = 0.6; // Heavy contest
+  } else if (contestDistance < 5) {
+    contestModifier = 0.8; // Light contest
   } else if (contestDistance < 6) {
-    basePct *= 0.85; // Light contest
+    contestModifier = 0.9; // Minor contest
   }
   
-  const pct = basePct * skillModifier(shotSkill) * (1 + advantage);
-  const willScore = state.rng() < pct;
+  // Shot selection intelligence - better shooters take harder shots
+  if (handler.player.isSuperstar) {
+    contestModifier = Math.max(contestModifier, 0.8); // Superstars less affected by contest
+  }
+  
+  // Time pressure affects accuracy
+  if (state.shotClock < 3) {
+    contestModifier *= 0.85;
+  }
+  
+  const finalPct = basePct * skillModifier(shotSkill) * contestModifier * (1 + advantage);
+  const willScore = state.rng() < finalPct;
 
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...handler.pos };
@@ -1005,19 +1420,26 @@ function attemptShot(state: GameState, handler: SimPlayer, basket: Vec2) {
   state.ball.shotWillScore = willScore;
   clearBallCarrier(state);
   state.phase = 'shooting';
-  state.play = { type: 'none', progress: 0 }; // End current play
-  state.lastEvent = `${handler.player.name} shoots from ${distToBasket.toFixed(0)}ft`;
+  state.play = { type: 'none', progress: 0, stage: 0, stageTimer: 0, passCount: 0, lastPassTime: 0 };
+  
+  const contestStr = contestDistance < 3 ? ' (contested)' : contestDistance < 6 ? ' (lightly contested)' : '';
+  state.lastEvent = `${handler.player.name} shoots${contestStr} from ${distToBasket.toFixed(0)}ft`;
 }
 
 function passBall(state: GameState, from: SimPlayer, to: SimPlayer) {
-  // Check for steal on pass
+  // Enhanced pass interception system
   const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
-  const passLine = { from: from.pos, to: to.pos };
   
   for (const def of defTeam) {
-    const distToLine = distanceToLine(def.pos, passLine);
-    if (distToLine < 3) {
-      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.05;
+    const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
+    const reactionDistance = dist(def.pos, from.pos);
+    
+    if (distToLine < 2.5 && reactionDistance < 12) {
+      let stealChance = skillModifier(def.player.skills.defense.steal) * 0.08;
+      
+      // Increase chance if defender is between passer and receiver
+      if (distToLine < 1.5) stealChance *= 2;
+      
       if (state.rng() < stealChance) {
         clearBallCarrier(state);
         def.hasBall = true;
@@ -1029,16 +1451,20 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer) {
     }
   }
 
+  // Execute pass
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...from.pos };
   state.ball.flightTo = { ...to.pos };
   state.ball.flightProgress = 0;
   const d = dist(from.pos, to.pos);
-  state.ball.flightDuration = 0.2 + d * 0.015;
+  state.ball.flightDuration = 0.15 + d * 0.012; // Faster passes
   state.ball.isShot = false;
   state.ball.shotWillScore = false;
   clearBallCarrier(state);
   state.lastEvent = `${from.player.name} passes to ${to.player.name}`;
+  
+  // Update play state
+  state.play.lastPassTime = state.gameTime;
 }
 
 function distanceToLine(point: Vec2, line: { from: Vec2; to: Vec2 }): number {
@@ -1064,10 +1490,29 @@ function distanceToLine(point: Vec2, line: { from: Vec2; to: Vec2 }): number {
 }
 
 function driveToBasket(state: GameState, handler: SimPlayer, basket: Vec2, _dir: number) {
-  handler.targetPos = {
-    x: basket.x + (handler.pos.x > basket.x ? 3 : -3),
-    y: basket.y + (state.rng() - 0.5) * 8,
-  };
+  // Enhanced drive with collision detection
+  const defender = findDefender(handler, state);
+  
+  if (defender && dist(defender.pos, handler.pos) < 4) {
+    // Can't drive directly through defender - try to go around
+    const driveAngle = Math.atan2(basket.y - handler.pos.y, basket.x - handler.pos.x);
+    const defAngle = Math.atan2(defender.pos.y - handler.pos.y, defender.pos.x - handler.pos.x);
+    
+    // Choose side to drive around defender
+    const angleDiff = driveAngle - defAngle;
+    const goLeft = Math.sin(angleDiff) > 0;
+    
+    handler.targetPos = {
+      x: basket.x + (goLeft ? -4 : 4),
+      y: basket.y + (goLeft ? -6 : 6),
+    };
+  } else {
+    // Clear path to basket
+    handler.targetPos = {
+      x: basket.x + (handler.pos.x > basket.x ? 3 : -3),
+      y: basket.y + (state.rng() - 0.5) * 8,
+    };
+  }
 }
 
 function changePossession(state: GameState, event: string) {
@@ -1075,7 +1520,7 @@ function changePossession(state: GameState, event: string) {
   state.phase = 'inbound';
   state.phaseTicks = 0;
   state.shotClock = 24;
-  state.play = { type: 'none', progress: 0 };
+  state.play = { type: 'none', progress: 0, stage: 0, stageTimer: 0, passCount: 0, lastPassTime: 0 };
   if (event) state.lastEvent = event;
   resetPositions(state);
 }
@@ -1091,27 +1536,35 @@ function resetPositions(state: GameState) {
   // Spread out for inbound
   for (let i = 0; i < offTeam.length; i++) {
     offTeam[i].pos = { 
-      x: ownBasket.x + dir * (8 + i * 3), 
-      y: BASKET_Y + (i - 2) * 6 
+      x: ownBasket.x + dir * (5 + i * 2), 
+      y: BASKET_Y + (i - 2) * 5 
     };
     offTeam[i].targetPos = { ...offTeam[i].pos };
     offTeam[i].rollingToBasket = false;
+    // Reset movement state
+    offTeam[i].movement.isDefensiveSliding = false;
+    offTeam[i].movement.isCutting = false;
+    offTeam[i].movement.isScreening = false;
   }
 
   // Defense transitions
   for (let i = 0; i < defTeam.length; i++) {
     defTeam[i].pos = { 
-      x: ownBasket.x + dir * (15 + i * 3), 
-      y: BASKET_Y + (i - 2) * 6 
+      x: ownBasket.x + dir * (12 + i * 2), 
+      y: BASKET_Y + (i - 2) * 5 
     };
     defTeam[i].targetPos = { ...defTeam[i].pos };
+    // Reset movement state
+    defTeam[i].movement.isDefensiveSliding = false;
+    defTeam[i].movement.isCutting = false;
+    defTeam[i].movement.isScreening = false;
   }
 
   state.ball.pos = { ...offTeam[0].pos };
   state.ball.inFlight = false;
 }
 
-// ── Drawing functions (keeping original style) ──
+// ── Drawing functions (keeping original style but enhanced) ──
 function drawCourt(ctx: CanvasRenderingContext2D) {
   const s = SCALE;
 
@@ -1209,7 +1662,7 @@ function drawPlayers(ctx: CanvasRenderingContext2D, state: GameState) {
     const y = sp.pos.y * s;
     const r = 12;
 
-    // Special effects
+    // Enhanced special effects
     if (sp.rollingToBasket) {
       // Rolling to basket indicator
       ctx.beginPath();
@@ -1218,12 +1671,34 @@ function drawPlayers(ctx: CanvasRenderingContext2D, state: GameState) {
       ctx.lineWidth = 2;
       ctx.stroke();
     }
-
-    // Glow for ball carrier
-    if (sp.hasBall) {
+    
+    if (sp.movement.isDefensiveSliding) {
+      // Defensive sliding indicator
       ctx.beginPath();
       ctx.arc(x, y, r + 6, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(255, 165, 0, 0.35)';
+      ctx.strokeStyle = 'rgba(255, 0, 0, 0.3)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+    
+    if (sp.movement.isCutting) {
+      // Cutting indicator
+      ctx.beginPath();
+      ctx.arc(x, y, r + 4, 0, Math.PI * 2);
+      ctx.strokeStyle = 'rgba(0, 255, 255, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+    }
+
+    // Enhanced glow for ball carrier
+    if (sp.hasBall) {
+      ctx.beginPath();
+      ctx.arc(x, y, r + 8, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 165, 0, 0.4)';
+      ctx.fill();
+      ctx.beginPath();
+      ctx.arc(x, y, r + 12, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(255, 165, 0, 0.2)';
       ctx.fill();
     }
 
@@ -1248,6 +1723,13 @@ function drawPlayers(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.font = '8px monospace';
     ctx.fillStyle = '#8b949e';
     ctx.fillText(sp.player.name.split(' ')[1] || sp.player.name, x, y + r + 10);
+    
+    // Enhanced fatigue indicator
+    if (sp.fatigue > 0.3) {
+      const fatigueHeight = sp.fatigue * 8;
+      ctx.fillStyle = `rgba(255, 0, 0, ${sp.fatigue * 0.7})`;
+      ctx.fillRect(x - 2, y - r - fatigueHeight - 2, 4, fatigueHeight);
+    }
   }
 }
 
@@ -1263,13 +1745,13 @@ function drawBall(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.fillStyle = 'rgba(0,0,0,0.3)';
     ctx.fill();
 
-    // Elevated ball (arc effect)
+    // Enhanced elevated ball (arc effect)
     let elevation = 0;
     if (state.ball.jumpBall?.active) {
       elevation = state.ball.jumpBall.height;
     } else {
       const t = state.ball.flightProgress;
-      elevation = Math.sin(t * Math.PI) * (state.ball.isShot ? 15 : 5);
+      elevation = Math.sin(t * Math.PI) * (state.ball.isShot ? 20 : 8);
     }
     
     ctx.beginPath();
@@ -1279,21 +1761,35 @@ function drawBall(ctx: CanvasRenderingContext2D, state: GameState) {
     ctx.strokeStyle = '#b45309';
     ctx.lineWidth = 1.5;
     ctx.stroke();
+    
+    // Ball spin lines for shots
+    if (state.ball.isShot) {
+      const spinAngle = state.ball.flightProgress * Math.PI * 4;
+      ctx.strokeStyle = '#b45309';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(bx + Math.cos(spinAngle) * 4, by - elevation + Math.sin(spinAngle) * 2);
+      ctx.lineTo(bx - Math.cos(spinAngle) * 4, by - elevation - Math.sin(spinAngle) * 2);
+      ctx.stroke();
+    }
   } else if (!state.ball.carrier) {
     ctx.beginPath();
     ctx.arc(bx, by, 5, 0, Math.PI * 2);
     ctx.fillStyle = '#e69138';
     ctx.fill();
+    ctx.strokeStyle = '#b45309';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
 }
 
 function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
-  // Scoreboard background
-  ctx.fillStyle = 'rgba(13, 17, 23, 0.9)';
-  ctx.fillRect(CANVAS_W / 2 - 200, 0, 400, 44);
+  // Enhanced scoreboard background
+  ctx.fillStyle = 'rgba(13, 17, 23, 0.95)';
+  ctx.fillRect(CANVAS_W / 2 - 220, 0, 440, 50);
   ctx.strokeStyle = '#30363d';
   ctx.lineWidth = 1;
-  ctx.strokeRect(CANVAS_W / 2 - 200, 0, 400, 44);
+  ctx.strokeRect(CANVAS_W / 2 - 220, 0, 440, 50);
 
   ctx.font = 'bold 14px monospace';
   ctx.textAlign = 'center';
@@ -1301,10 +1797,10 @@ function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
 
   // Home team
   ctx.fillStyle = '#f85149';
-  ctx.fillText('Hawks', CANVAS_W / 2 - 130, 16);
+  ctx.fillText('Hawks', CANVAS_W / 2 - 150, 16);
   ctx.fillStyle = '#e6edf3';
   ctx.font = 'bold 20px monospace';
-  ctx.fillText(String(state.score[0]), CANVAS_W / 2 - 60, 22);
+  ctx.fillText(String(state.score[0]), CANVAS_W / 2 - 80, 22);
 
   // Clock
   ctx.fillStyle = '#3fb950';
@@ -1312,45 +1808,65 @@ function drawHUD(ctx: CanvasRenderingContext2D, state: GameState) {
   const min = Math.floor(state.clockSeconds / 60);
   const sec = Math.floor(state.clockSeconds % 60);
   ctx.fillText(`Q${state.quarter} ${min}:${sec.toString().padStart(2, '0')}`, CANVAS_W / 2, 16);
+  
+  // Enhanced shot clock display
   ctx.font = '10px monospace';
-  ctx.fillStyle = '#8b949e';
+  ctx.fillStyle = state.shotClock < 5 ? '#f85149' : '#8b949e';
   ctx.fillText(`SC: ${Math.ceil(state.shotClock)}`, CANVAS_W / 2, 34);
 
   // Away team
   ctx.fillStyle = '#58a6ff';
   ctx.font = 'bold 14px monospace';
-  ctx.fillText('Wolves', CANVAS_W / 2 + 130, 16);
+  ctx.fillText('Wolves', CANVAS_W / 2 + 150, 16);
   ctx.fillStyle = '#e6edf3';
   ctx.font = 'bold 20px monospace';
-  ctx.fillText(String(state.score[1]), CANVAS_W / 2 + 60, 22);
+  ctx.fillText(String(state.score[1]), CANVAS_W / 2 + 80, 22);
 
-  // Event text
+  // Enhanced event text with background
   if (state.lastEvent) {
-    ctx.fillStyle = 'rgba(13, 17, 23, 0.85)';
-    ctx.fillRect(CANVAS_W / 2 - 180, CANVAS_H - 28, 360, 24);
+    ctx.fillStyle = 'rgba(13, 17, 23, 0.9)';
+    ctx.fillRect(CANVAS_W / 2 - 200, CANVAS_H - 32, 400, 28);
+    ctx.strokeStyle = '#30363d';
+    ctx.strokeRect(CANVAS_W / 2 - 200, CANVAS_H - 32, 400, 28);
     ctx.fillStyle = '#e6edf3';
-    ctx.font = '11px monospace';
+    ctx.font = '12px monospace';
     ctx.textAlign = 'center';
-    ctx.fillText(state.lastEvent, CANVAS_W / 2, CANVAS_H - 16);
+    ctx.fillText(state.lastEvent, CANVAS_W / 2, CANVAS_H - 18);
   }
 
-  // Possession indicator
-  const posX = state.possession === 0 ? CANVAS_W / 2 - 60 : CANVAS_W / 2 + 60;
+  // Enhanced possession indicator
+  const posX = state.possession === 0 ? CANVAS_W / 2 - 80 : CANVAS_W / 2 + 80;
   ctx.beginPath();
-  ctx.arc(posX, 36, 3, 0, Math.PI * 2);
+  ctx.arc(posX, 38, 4, 0, Math.PI * 2);
   ctx.fillStyle = '#3fb950';
   ctx.fill();
+  
+  // Possession arrow
+  ctx.fillStyle = state.possession === 0 ? '#f85149' : '#58a6ff';
+  ctx.font = 'bold 12px monospace';
+  ctx.fillText('●', posX, 38);
 
-  // Play indicator
+  // Enhanced play indicator with stage info
   if (state.play.type !== 'none') {
     ctx.fillStyle = '#8b949e';
     ctx.font = '9px monospace';
-    ctx.textAlign = 'center';
-    ctx.fillText(`Play: ${state.play.type}`, CANVAS_W / 2, CANVAS_H - 4);
+    ctx.textAlign = 'left';
+    const playText = `${state.play.type.toUpperCase()} - Stage ${state.play.stage + 1}`;
+    ctx.fillText(playText, 10, CANVAS_H - 10);
+    
+    if (state.play.passCount > 0) {
+      ctx.fillText(`Passes: ${state.play.passCount}`, 10, CANVAS_H - 25);
+    }
   }
+  
+  // Phase indicator
+  ctx.fillStyle = '#8b949e';
+  ctx.font = '8px monospace';
+  ctx.textAlign = 'right';
+  ctx.fillText(`Phase: ${state.phase.toUpperCase()}`, CANVAS_W - 10, CANVAS_H - 10);
 }
 
-// ── React Component ──
+// ── React Component (unchanged structure) ──
 export function CourtView() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const stateRef = useRef<GameState>(initGameState());
@@ -1510,16 +2026,20 @@ export function CourtView() {
         />
       </div>
 
-      {/* Game info */}
-      <div className="text-xs text-[var(--color-text-dim)] text-center">
-        <span className="text-[var(--color-accent)]">Q{gs.quarter}</span>
-        {' | '}
-        <span style={{ color: gs.possession === 0 ? '#f85149' : '#58a6ff' }}>
-          {gs.possession === 0 ? 'Hawks' : 'Wolves'} ball
-        </span>
-        {' | '}Phase: {gs.phase}
-        {gs.play.type !== 'none' && ` | Play: ${gs.play.type}`}
-        {' | '}{gs.lastEvent}
+      {/* Enhanced game info */}
+      <div className="text-xs text-[var(--color-text-dim)] text-center max-w-4xl">
+        <div className="mb-1">
+          <span className="text-[var(--color-accent)]">Q{gs.quarter}</span>
+          {' | '}
+          <span style={{ color: gs.possession === 0 ? '#f85149' : '#58a6ff' }}>
+            {gs.possession === 0 ? 'Hawks' : 'Wolves'} ball
+          </span>
+          {' | '}Phase: <span className="text-[var(--color-accent)]">{gs.phase}</span>
+          {gs.play.type !== 'none' && 
+            <span> | Play: <span className="text-yellow-400">{gs.play.type}</span> (Stage {gs.play.stage + 1})</span>
+          }
+        </div>
+        <div>{gs.lastEvent}</div>
       </div>
     </div>
   );
