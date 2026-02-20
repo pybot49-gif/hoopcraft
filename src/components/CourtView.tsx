@@ -922,21 +922,36 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   const isOpen = checkIfOpen(handler, state);
   const timeUrgency = state.shotClock < 8;
   
+  const roll = state.rng();
+  const possessionAge = 24 - state.shotClock; // seconds into possession
+  
   if (state.shotClock < 2) {
     // Desperation shot
     attemptShot(state, handler, basketPos);
-  } else if (timeUrgency && isOpen && distToBasket < 25) {
-    // Quick shot due to shot clock
+  } else if (state.shotClock < 6 && distToBasket < 25) {
+    // Shot clock pressure — just shoot if reasonable
     attemptShot(state, handler, basketPos);
-  } else if (state.rng() < 0.3 && isOpen && distToBasket < 25) {
-    // Regular shot opportunity
+  } else if (isOpen && distToBasket < 25 && roll < 0.15) {
+    // Open shot — take it
     attemptShot(state, handler, basketPos);
-  } else if (state.rng() < 0.5) {
+  } else if (distToBasket < 8 && roll < 0.20) {
+    // Close to basket — high chance to score
+    attemptShot(state, handler, basketPos);
+  } else if (possessionAge > 12 && distToBasket < 28 && roll < 0.10) {
+    // Late in possession — be more aggressive
+    attemptShot(state, handler, basketPos);
+  } else if (roll < 0.08) {
     // Look for pass
     const passOptions = getPassOptions(state, handler);
     if (passOptions.length > 0) {
       passBall(state, handler, passOptions[0]);
     }
+  } else if (roll < 0.12 && distToBasket > 15) {
+    // Drive toward basket
+    handler.targetPos = {
+      x: basketPos.x + (handler.pos.x > basketPos.x ? 3 : -3),
+      y: basketPos.y + (state.rng() - 0.5) * 8,
+    };
   }
   
   // Steal attempts
@@ -1279,8 +1294,9 @@ function updateBallFlight(state: GameState, dt: number): void {
           const pts = shotDistance > 22 ? 3 : 2;
           const shooterName = (state.ball as any).shooterName || 'Player';
           
-          state.score[state.possession] += pts;
-          state.lastEvent = `${shooterName} scores ${pts}!`;
+          const scoringTeam = state.possession;
+          state.score[scoringTeam] += pts;
+          state.lastEvent = `${shooterName} scores ${pts}! (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
           state.phase = 'rebound';
