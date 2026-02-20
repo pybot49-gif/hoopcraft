@@ -929,7 +929,10 @@ function tick(state: GameState): GameState {
   if (state.phase !== 'jumpball' && state.gameStarted) {
     state.clockSeconds -= dt;
     state.shotClock -= dt;
-    state.advanceClock += dt;
+    // Advance clock only ticks during advance phase (after inbound pass)
+    if (state.phase === 'advance') {
+      state.advanceClock += dt;
+    }
   }
 
   // Game clock management
