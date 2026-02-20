@@ -1016,7 +1016,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   const nearestDefender = findNearestDefender(handler, state);
   if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 50 === 0) {
     const stealSkill = nearestDefender.player.skills.defense.steal;
-    const stealChance = 0.003 + (stealSkill / 100) * 0.022; // D(60)=1.6%, S(96)=2.4%
+    const stealChance = 0.001 + (stealSkill / 100) * 0.012; // D(60)=0.8%, S(96)=1.3%
     if (state.rng() < stealChance) {
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
@@ -1634,22 +1634,79 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   state.lastEvent = `${shooterName} shoots${contestStr} from ${distToBasket.toFixed(0)}ft`;
 }
 
-function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
-  // Check for interception
-  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+type PassType = 'chest' | 'bounce' | 'lob' | 'overhead';
+
+function choosePassType(from: SimPlayer, to: SimPlayer, defTeam: SimPlayer[], rng: () => number): PassType {
+  const passDist = dist(from.pos, to.pos);
   
+  // Check if any defender is directly between passer and target
+  let defenderInLane = false;
   for (const def of defTeam) {
-    const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
-    if (distToLine < 2.5 && dist(def.pos, from.pos) < 12) {
-      // Interception: skill-based absolute chance, not multiplied by modifier
-      // Elite stealer ~1.5% per pass, average ~0.3%
+    const dToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
+    if (dToLine < 3 && dist(def.pos, from.pos) < passDist) {
+      defenderInLane = true;
+      break;
+    }
+  }
+  
+  if (defenderInLane) {
+    // Smart pass: go over or under the defender
+    if (rng() < 0.4) return 'lob';      // high over defender
+    if (rng() < 0.5) return 'bounce';    // under defender's hands
+    return 'overhead';                    // overhead pass
+  }
+  
+  // No defender in lane — standard pass
+  if (passDist > 20) return 'overhead';   // long pass = overhead
+  if (passDist < 8) return 'chest';       // short = chest
+  return rng() < 0.7 ? 'chest' : 'bounce';
+}
+
+function getPassZ(passType: PassType, t: number, passDist: number): { fromZ: number; peakZ: number } {
+  switch (passType) {
+    case 'chest':    return { fromZ: 5, peakZ: 5.5 + passDist * 0.02 };
+    case 'bounce':   return { fromZ: 4, peakZ: 2 };  // goes DOWN then back up
+    case 'lob':      return { fromZ: 7, peakZ: 12 + passDist * 0.1 };  // high arc
+    case 'overhead': return { fromZ: 8, peakZ: 9 + passDist * 0.05 };
+  }
+}
+
+function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
+  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  const passDist = dist(from.pos, to.pos);
+  
+  // Choose pass type based on situation (smart passing over/under defenders)
+  const passType = choosePassType(from, to, defTeam, state.rng);
+  const passZ = getPassZ(passType, 0, passDist);
+  
+  // Check for interception — z-coordinate matters!
+  for (const def of defTeam) {
+    const dToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
+    const defDist = dist(def.pos, from.pos);
+    
+    if (dToLine < 2 && defDist < passDist && defDist > 2) {
+      // Defender is in the passing lane — but can they reach the ball?
       const stealSkill = def.player.skills.defense.steal;
-      const stealChance = 0.001 + (stealSkill / 100) * 0.012; // D(60)=0.8%, S(96)=1.3%
-      if (state.rng() < stealChance) {
+      let baseChance = 0.0005 + (stealSkill / 100) * 0.006; // D(60)=0.4%, S(96)=0.6%
+      
+      // Z-factor: how reachable is the ball at this point?
+      // Defender reach height ~8ft standing, ~9ft jumping
+      const defReach = 8 + (def.player.physical.height / 200) * 1.5; // taller = higher reach
+      
+      if (passType === 'lob' && passZ.peakZ > defReach) {
+        baseChance *= 0.1;  // Lob over defender — very hard to intercept
+      } else if (passType === 'bounce') {
+        baseChance *= 0.5;  // Bounce pass — harder to intercept (low)
+      } else if (passType === 'overhead' && passZ.peakZ > defReach - 1) {
+        baseChance *= 0.3;  // Overhead — mostly unreachable
+      }
+      // Chest pass at normal height — full chance
+      
+      if (state.rng() < baseChance) {
         clearBallCarrier(state);
         def.hasBall = true;
         state.ball.carrier = def;
-        state.lastEvent = `${def.player.name} intercepts the pass!`;
+        state.lastEvent = `${def.player.name} intercepts the ${passType} pass!`;
         changePossession(state, '');
         return;
       }
@@ -1660,18 +1717,18 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...from.pos };
   state.ball.flightTo = { ...to.pos };
-  state.ball.flightFromZ = 5; // chest pass height
-  state.ball.flightPeakZ = 6 + dist(from.pos, to.pos) * 0.05; // slight arc on passes
+  state.ball.flightFromZ = passZ.fromZ;
+  state.ball.flightPeakZ = passZ.peakZ;
   state.ball.flightProgress = 0;
-  const d = dist(from.pos, to.pos);
-  state.ball.flightDuration = 0.15 + d * 0.012;
+  state.ball.flightDuration = 0.15 + passDist * 0.012;
   state.ball.isShot = false;
   state.ball.shotWillScore = false;
+  state.ball.missType = null;
   clearBallCarrier(state);
   
   state.lastPassFrom = from.id;
   state.lastPassTime = state.gameTime;
-  state.lastEvent = `${from.player.name} passes to ${to.player.name}`;
+  state.lastEvent = `${from.player.name} ${passType} pass to ${to.player.name}`;
 }
 
 function changePossession(state: GameState, event: string): void {
