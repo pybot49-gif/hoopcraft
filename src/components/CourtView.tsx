@@ -756,10 +756,14 @@ function tick(state: GameState): GameState {
       break;
   }
 
-  // Update all systems
+  // Update defense EVERY phase (not just action/setup)
+  if (state.phase !== 'jumpball') {
+    updateDefenseAssignments(state);
+  }
+  
+  // Update offensive systems during action/setup
   if (state.phase === 'action' || state.phase === 'setup') {
     assignRoles(state);
-    updateDefenseAssignments(state);
     processHelpDefense(state);
     
     if (state.currentPlay) {
@@ -816,32 +820,57 @@ function handleJumpBall(state: GameState): void {
 function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[], dir: number): void {
   const ownBasket = getOwnBasket(state.possession);
   
-  if (state.phaseTicks < 10) {
-    // Inbounder positions
+  // Stage 1 (ticks 0-15): Set up inbound formation
+  if (state.phaseTicks < 15) {
+    // Inbounder stands at baseline (out of bounds)
     const inbounder = offTeam[0];
-    inbounder.targetPos = { 
-      x: ownBasket.x + (dir > 0 ? -5 : 5), 
-      y: BASKET_Y + (state.rng() - 0.5) * 15
-    };
+    const baselineX = ownBasket.x + (dir > 0 ? -3 : 3);
+    inbounder.targetPos = { x: baselineX, y: BASKET_Y };
     
-    clearBallCarrier(state);
-    inbounder.hasBall = true;
-    state.ball.carrier = inbounder;
-    
-    // Position other offensive players
-    for (let i = 1; i < offTeam.length; i++) {
-      offTeam[i].targetPos = { 
-        x: ownBasket.x + dir * (8 + i * 3), 
-        y: BASKET_Y + (i - 2.5) * 7 
-      };
+    // Give ball to inbounder
+    if (!getBallHandler(state)) {
+      clearBallCarrier(state);
+      inbounder.hasBall = true;
+      state.ball.carrier = inbounder;
     }
-  } else {
-    // Execute inbound pass
+    
+    // Receivers spread out to get open
+    const receiverSpots = [
+      { x: ownBasket.x + dir * 12, y: BASKET_Y - 8 },  // near side
+      { x: ownBasket.x + dir * 15, y: BASKET_Y + 8 },  // far side
+      { x: ownBasket.x + dir * 20, y: BASKET_Y },       // middle
+      { x: ownBasket.x + dir * 10, y: BASKET_Y + 15 },  // deep
+    ];
+    for (let i = 1; i < offTeam.length; i++) {
+      offTeam[i].targetPos = { ...receiverSpots[Math.min(i - 1, receiverSpots.length - 1)] };
+    }
+    
+  // Stage 2 (ticks 15-25): Receiver cuts toward ball
+  } else if (state.phaseTicks < 25) {
     const inbounder = getBallHandler(state);
     if (inbounder) {
-      const receiver = offTeam.find(p => p !== inbounder && dist(p.pos, inbounder.pos) < 15);
-      if (receiver && state.rng() < 0.8) {
-        passBall(state, inbounder, receiver);
+      // PG (or closest player) cuts toward inbounder to receive
+      const receiver = offTeam.find(p => p !== inbounder && p.player.position === 'PG') 
+        || offTeam.find(p => p !== inbounder);
+      if (receiver) {
+        receiver.targetPos = {
+          x: inbounder.pos.x + dir * 6,
+          y: inbounder.pos.y + (state.rng() - 0.5) * 4
+        };
+      }
+    }
+    
+  // Stage 3 (tick 25+): Execute inbound pass
+  } else {
+    const inbounder = getBallHandler(state);
+    if (inbounder) {
+      // Find closest teammate
+      const receivers = offTeam
+        .filter(p => p !== inbounder)
+        .sort((a, b) => dist(a.pos, inbounder.pos) - dist(b.pos, inbounder.pos));
+      
+      if (receivers.length > 0) {
+        passBall(state, inbounder, receivers[0]);
         state.phase = 'advance';
         state.phaseTicks = 0;
       }
@@ -861,16 +890,29 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     state.crossedHalfCourt = true;
   }
   
-  // Ball handler advances
+  // Ball handler advances (dribble up court)
   const targetX = basketPos.x - dir * 20;
   handler.targetPos = { x: targetX, y: BASKET_Y };
   
-  // Other players spread out
+  // Other offensive players jog to offensive half, spreading out
+  const offSpots = [
+    { x: basketPos.x - dir * 25, y: BASKET_Y - 15 }, // left wing
+    { x: basketPos.x - dir * 25, y: BASKET_Y + 15 }, // right wing  
+    { x: basketPos.x - dir * 20, y: BASKET_Y - 5 },  // left elbow area
+    { x: basketPos.x - dir * 18, y: BASKET_Y + 5 },  // right elbow area
+  ];
+  let spotIdx = 0;
   for (let i = 0; i < offTeam.length; i++) {
     if (offTeam[i] === handler) continue;
-    offTeam[i].targetPos = {
-      x: HALF_X + dir * (8 + i * 4),
-      y: BASKET_Y + (i - 2) * 8
+    offTeam[i].targetPos = { ...offSpots[spotIdx % offSpots.length] };
+    spotIdx++;
+  }
+  
+  // Defense retreats to their half (around their basket)
+  for (let i = 0; i < defTeam.length; i++) {
+    defTeam[i].targetPos = {
+      x: basketPos.x - dir * (12 + i * 3),
+      y: BASKET_Y + (i - 2) * 7
     };
   }
   
@@ -1003,7 +1045,7 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     clearBallCarrier(state);
     rebounder.hasBall = true;
     state.ball.carrier = rebounder;
-    state.ball.pos = { ...rebounder.pos };
+    // Ball will follow carrier via the carrier-tracking code
     state.lastEvent = `${rebounder.player.name} grabs the rebound`;
     
     if (rebounder.teamIdx !== state.possession) {
@@ -1516,9 +1558,10 @@ function resetPossession(state: GameState): void {
   const dir = state.possession === 0 ? 1 : -1;
   const ownBasket = getOwnBasket(state.possession);
 
-  clearBallCarrier(state);
+  // Don't teleport — set targets and let players move naturally
+  // Ball will follow carrier once assigned in inbound phase
   
-  // Position for inbound
+  // Offensive players transition toward own baseline area
   for (let i = 0; i < offTeam.length; i++) {
     offTeam[i].targetPos = { 
       x: ownBasket.x + dir * (5 + i * 2), 
@@ -1526,14 +1569,15 @@ function resetPossession(state: GameState): void {
     };
   }
 
+  // Defense retreats toward their basket (the one offense attacks)
+  const oppBasket = getTeamBasket(state.possession);
   for (let i = 0; i < defTeam.length; i++) {
     defTeam[i].targetPos = { 
-      x: ownBasket.x + dir * (12 + i * 2), 
-      y: BASKET_Y + (i - 2) * 5 
+      x: oppBasket.x - dir * (15 + i * 3), 
+      y: BASKET_Y + (i - 2) * 6 
     };
   }
 
-  state.ball.pos = { ...offTeam[0].pos };
   state.ball.inFlight = false;
 }
 
