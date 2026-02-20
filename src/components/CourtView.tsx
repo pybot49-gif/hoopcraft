@@ -88,6 +88,8 @@ interface SimPlayer {
   isScreening: boolean;
 }
 
+type MissType = 'rim_out' | 'back_iron' | 'airball' | 'blocked' | 'front_rim' | null;
+
 interface BallState {
   pos: Vec2;
   carrier: SimPlayer | null;
@@ -98,6 +100,11 @@ interface BallState {
   flightDuration: number;
   isShot: boolean;
   shotWillScore: boolean;
+  missType: MissType;
+  // For rebound bounce animation
+  bouncing: boolean;
+  bounceTarget: Vec2;
+  bounceProgress: number;
   jumpBall?: {
     active: boolean;
     height: number;
@@ -822,10 +829,10 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Stage 1 (ticks 0-15): Set up inbound formation
   if (state.phaseTicks < 15) {
-    // Inbounder stands at baseline (out of bounds)
+    // Inbounder stands OUT OF BOUNDS behind baseline
     const inbounder = offTeam[0];
-    const baselineX = ownBasket.x + (dir > 0 ? -3 : 3);
-    inbounder.targetPos = { x: baselineX, y: BASKET_Y };
+    const baselineX = dir > 0 ? 0.5 : COURT_W - 0.5; // behind the baseline
+    inbounder.targetPos = { x: baselineX, y: BASKET_Y + 5 };
     
     // Give ball to inbounder
     if (!getBallHandler(state)) {
@@ -999,7 +1006,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   // Steal attempts
   const nearestDefender = findNearestDefender(handler, state);
   if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 3) {
-    const stealChance = skillModifier(nearestDefender.player.skills.defense.steal) * 0.02;
+    const stealChance = skillModifier(nearestDefender.player.skills.defense.steal) * 0.002;
     if (state.rng() < stealChance) {
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
@@ -1011,30 +1018,81 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
 }
 
 function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[]): void {
-  const reboundPos = { ...state.ball.pos };
+  const basket = getTeamBasket(state.possession);
   
-  // Players converge on rebound
-  for (const p of state.players) {
-    p.targetPos = { 
-      x: reboundPos.x + (state.rng() - 0.5) * 6, 
-      y: reboundPos.y + (state.rng() - 0.5) * 6
-    };
+  // Stage 1: Ball bouncing animation (first 8 ticks)
+  if (state.ball.bouncing) {
+    state.ball.bounceProgress += 0.12;
+    const t = Math.min(1, state.ball.bounceProgress);
+    // Ball bounces from rim to bounce target
+    state.ball.pos.x = basket.x + (state.ball.bounceTarget.x - basket.x) * t;
+    state.ball.pos.y = basket.y + (state.ball.bounceTarget.y - basket.y) * t;
+    
+    if (t >= 1) {
+      state.ball.bouncing = false;
+    }
   }
   
-  if (state.phaseTicks > 12) {
-    // Determine rebounder
-    const nearPlayers = state.players
-      .sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos))
-      .slice(0, 6);
+  const reboundPos = state.ball.bouncing ? state.ball.bounceTarget : state.ball.pos;
+  
+  // Stage 2: Box out — defenders try to get between their man and the basket
+  if (state.phaseTicks < 15) {
+    // Bigs and nearby players fight for position
+    for (const def of defTeam) {
+      // Box out: defender positions between offensive player and rebound spot
+      const matchup = offTeam[def.courtIdx] || offTeam[0];
+      const toRebound = { 
+        x: reboundPos.x - matchup.pos.x, 
+        y: reboundPos.y - matchup.pos.y 
+      };
+      const toDist = Math.sqrt(toRebound.x * toRebound.x + toRebound.y * toRebound.y) || 1;
       
-    let rebounder = nearPlayers[0];
-    let bestValue = 0;
+      // Box out position: between matchup and rebound, closer to rebound
+      def.targetPos = {
+        x: matchup.pos.x + (toRebound.x / toDist) * 2.5,
+        y: matchup.pos.y + (toRebound.y / toDist) * 2.5
+      };
+    }
     
-    for (const p of nearPlayers) {
+    // Offensive players try to get around box-out to the ball
+    for (const off of offTeam) {
+      const toDist = dist(off.pos, reboundPos);
+      if (toDist < 15) {
+        // Try to get to the ball, offset to go around defender
+        off.targetPos = {
+          x: reboundPos.x + (state.rng() - 0.5) * 4,
+          y: reboundPos.y + (state.rng() - 0.5) * 4
+        };
+      }
+    }
+    return;
+  }
+  
+  // Stage 3: Ball is grabbed
+  if (state.phaseTicks >= 15) {
+    // Players nearest to rebound spot compete
+    const competitors = [...state.players]
+      .filter(p => dist(p.pos, reboundPos) < 12)
+      .sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos));
+    
+    if (competitors.length === 0) {
+      // Nobody close, closest player gets it
+      competitors.push(...[...state.players].sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos)).slice(0, 3));
+    }
+      
+    let rebounder = competitors[0];
+    let bestValue = -1;
+    
+    for (const p of competitors.slice(0, 5)) {
       const rebSkill = p.player.skills.athletic.rebounding;
       const height = p.player.physical.height;
-      const position = dist(p.pos, reboundPos);
-      const value = skillModifier(rebSkill) * (height / 200) * (10 - position) * state.rng();
+      const vertical = p.player.physical.vertical;
+      const proximity = Math.max(0.1, 12 - dist(p.pos, reboundPos)); // closer = better
+      
+      // Defensive players have natural box-out advantage (~60/40 split in NBA)
+      const boxOutBonus = p.teamIdx !== state.possession ? 1.3 : 1.0;
+      
+      const value = skillModifier(rebSkill) * (height / 200) * (vertical / 80) * proximity * boxOutBonus * (0.5 + state.rng() * 0.5);
       
       if (value > bestValue) {
         bestValue = value;
@@ -1045,11 +1103,18 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     clearBallCarrier(state);
     rebounder.hasBall = true;
     state.ball.carrier = rebounder;
-    // Ball will follow carrier via the carrier-tracking code
-    state.lastEvent = `${rebounder.player.name} grabs the rebound`;
+    
+    const rebType = rebounder.teamIdx !== state.possession ? 'defensive' : 'offensive';
+    state.lastEvent = `${rebounder.player.name} grabs the ${rebType} rebound!`;
     
     if (rebounder.teamIdx !== state.possession) {
-      changePossession(state, '');
+      // Defensive rebound — change possession
+      state.possession = rebounder.teamIdx;
+      state.phase = 'advance';
+      state.phaseTicks = 0;
+      state.shotClock = 24;
+      state.crossedHalfCourt = false;
+      state.advanceClock = 0;
     } else {
       // Offensive rebound
       state.shotClock = 14;
@@ -1341,9 +1406,44 @@ function updateBallFlight(state: GameState, dt: number): void {
           state.lastEvent = `${shooterName} scores ${pts}! (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
+          // Miss — start bounce animation
+          const basket = getTeamBasket(state.possession);
+          const missType = state.ball.missType || 'rim_out';
+          const dir = state.possession === 0 ? 1 : -1;
+          
+          // Where does the ball bounce to?
+          let bounceTarget: Vec2;
+          switch (missType) {
+            case 'airball':
+              bounceTarget = { x: basket.x - dir * 4, y: basket.y + (state.rng() - 0.5) * 12 };
+              break;
+            case 'back_iron':
+              // Long rebound — bounces out toward perimeter
+              bounceTarget = { x: basket.x - dir * (10 + state.rng() * 6), y: basket.y + (state.rng() - 0.5) * 14 };
+              break;
+            case 'front_rim':
+              // Short rebound — stays near basket
+              bounceTarget = { x: basket.x - dir * (2 + state.rng() * 4), y: basket.y + (state.rng() - 0.5) * 6 };
+              break;
+            default: // rim_out
+              bounceTarget = { x: basket.x - dir * (4 + state.rng() * 8), y: basket.y + (state.rng() - 0.5) * 10 };
+              break;
+          }
+          
+          state.ball.bouncing = true;
+          state.ball.bounceTarget = bounceTarget;
+          state.ball.bounceProgress = 0;
           state.phase = 'rebound';
           state.phaseTicks = 0;
-          state.lastEvent = 'Miss! Rebound...';
+          
+          const missTexts: Record<string, string[]> = {
+            'airball': ['Airball!', 'Way off! Airball!'],
+            'rim_out': ['Rims out!', 'Spins out!', 'In and out!'],
+            'back_iron': ['Off the back iron!', 'Clanks off the rim!', 'Hits back iron, long rebound!'],
+            'front_rim': ['Front rim!', 'Short! Off the front rim!'],
+          };
+          const texts = missTexts[missType] || ['Miss!'];
+          state.lastEvent = texts[Math.floor(state.rng() * texts.length)];
         }
         state.ball.isShot = false;
       } else {
@@ -1477,6 +1577,24 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   state.ball.isShot = true;
   state.ball.shotWillScore = willScore;
   
+  // Determine miss type
+  if (!willScore) {
+    const missRoll = state.rng();
+    if (distToBasket > 25 && missRoll < 0.15) {
+      state.ball.missType = 'airball';
+    } else if (missRoll < 0.35) {
+      state.ball.missType = 'rim_out';
+    } else if (missRoll < 0.55) {
+      state.ball.missType = 'back_iron';
+    } else if (missRoll < 0.75) {
+      state.ball.missType = 'front_rim';
+    } else {
+      state.ball.missType = 'rim_out';
+    }
+  } else {
+    state.ball.missType = null;
+  }
+  
   (state.ball as any).shooterName = shooterName;
   (state.ball as any).shooterPossession = state.possession;
   
@@ -1495,7 +1613,7 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   for (const def of defTeam) {
     const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
     if (distToLine < 2.5 && dist(def.pos, from.pos) < 12) {
-      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.08;
+      const stealChance = skillModifier(def.player.skills.defense.steal) * 0.015;
       if (state.rng() < stealChance) {
         clearBallCarrier(state);
         def.hasBall = true;
@@ -1579,6 +1697,8 @@ function resetPossession(state: GameState): void {
   }
 
   state.ball.inFlight = false;
+  state.ball.bouncing = false;
+  state.ball.missType = null;
 }
 
 function initGameState(): GameState {
@@ -1620,6 +1740,10 @@ function initGameState(): GameState {
       flightDuration: 0,
       isShot: false,
       shotWillScore: false,
+      missType: null,
+      bouncing: false,
+      bounceTarget: { x: 0, y: 0 },
+      bounceProgress: 0,
       jumpBall: {
         active: false,
         height: 0,
