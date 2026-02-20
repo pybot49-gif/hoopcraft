@@ -47,7 +47,10 @@ function fatigueModifier(currentFatigue: number, stamina: number): number {
 
 function superstarBonus(player: Player, momentum: Record<string, number>): number {
   if (!player.isSuperstar) return 0;
-  return (momentum[player.id] || 0) >= 3 ? 0.10 : 0;
+  // Superstars always get a baseline boost + takeover when hot
+  const base = 0.08;
+  const takeover = (momentum[player.id] || 0) >= 3 ? 0.12 : 0;
+  return base + takeover;
 }
 
 function addPBP(state: GameState, quarter: number, time: string, text: string, teamColor?: string, playerName?: string) {
@@ -72,6 +75,7 @@ function pickShooter(
   const weights = players.map(p => {
     let w = 10;
     const bonus = superstarBonus(p, momentum);
+    if (p.isSuperstar) w += 12;
     if (p.isSuperstar && (momentum[p.id] || 0) >= 3) w += 15;
 
     switch (offTactic) {
@@ -134,38 +138,39 @@ function resolveShot(
 
   switch (playType) {
     case 'three':
-      baseChance = 0.34; isThree = true;
+      baseChance = 0.36; isThree = true;
       baseChance *= skillModifier(shooter.skills.shooting.three_point); break;
     case 'midrange':
-      baseChance = 0.42;
+      baseChance = 0.44;
       baseChance *= skillModifier(shooter.skills.shooting.mid_range); break;
     case 'layup': case 'fastbreak_layup':
-      baseChance = 0.55;
+      baseChance = 0.58;
       baseChance *= skillModifier(shooter.skills.finishing.layup); break;
     case 'dunk': case 'fastbreak_dunk':
-      baseChance = 0.65;
+      baseChance = 0.72;
       baseChance *= skillModifier(shooter.skills.finishing.dunk); break;
     case 'post':
-      baseChance = 0.45;
+      baseChance = 0.48;
       baseChance *= skillModifier(shooter.skills.finishing.post_move); break;
     case 'floater':
-      baseChance = 0.40;
+      baseChance = 0.44;
       baseChance *= skillModifier(shooter.skills.finishing.floater); break;
     default:
-      baseChance = 0.42;
+      baseChance = 0.44;
   }
 
+  // Defense reduces chance but less harshly
   const defSkill = isThree || playType === 'midrange'
     ? skillModifier(defender.skills.defense.perimeter_d)
     : skillModifier(defender.skills.defense.interior_d);
   const contestMod = skillModifier(defender.skills.defense.shot_contest);
-  baseChance *= (1 - (defSkill * contestMod - 0.5) * 0.3);
+  baseChance *= (1 - (defSkill * contestMod - 0.7) * 0.2);
 
   baseChance *= (1 + tacticAdv);
   baseChance *= fatMod;
   baseChance *= (1 + sBonus);
   if (playType.startsWith('fastbreak')) baseChance *= 1.15;
-  baseChance = Math.max(0.15, Math.min(0.85, baseChance));
+  baseChance = Math.max(0.18, Math.min(0.72, baseChance));
 
   const blockChance = skillModifier(defender.skills.defense.block) * 0.06 *
     (defender.physical.height > shooter.physical.height ? 1.2 : 0.8);
@@ -236,7 +241,7 @@ function simulatePossession(
   const bestStealer = defTeam.players.reduce((best, p) =>
     p.skills.defense.steal > best.skills.defense.steal ? p : best
   );
-  const stealChance = skillModifier(bestStealer.skills.defense.steal) * 0.07;
+  const stealChance = skillModifier(bestStealer.skills.defense.steal) * 0.04;
 
   if (rng() < stealChance) {
     getStat(defStats, bestStealer.id).steals += 1;
@@ -248,8 +253,8 @@ function simulatePossession(
   }
 
   // --- Turnover check ---
-  const turnoverChance = 0.13 - skillModifier(ballHandler.skills.playmaking.ball_handling) * 0.03
-    + (offTactic === 'fast_break' ? 0.02 : 0);
+  const turnoverChance = 0.09 - skillModifier(ballHandler.skills.playmaking.ball_handling) * 0.02
+    + (offTactic === 'fast_break' ? 0.01 : 0);
 
   if (rng() < turnoverChance) {
     const handler = pickWeighted(offTeam.players.map(p => ({

@@ -20,11 +20,11 @@ export function skillToGrade(value: number): string {
 }
 
 export function skillModifier(value: number): number {
-  if (value >= 95) return 1.05;
-  if (value >= 85) return 0.98;
-  if (value >= 75) return 0.92;
-  if (value >= 65) return 0.85;
-  return 0.75;
+  if (value >= 95) return 1.20;  // S — elite
+  if (value >= 85) return 1.10;  // A — star
+  if (value >= 75) return 1.00;  // B — solid starter
+  if (value >= 65) return 0.88;  // C — rotation player
+  return 0.75;                   // D — replacement level
 }
 
 export function formatTime(secondsRemaining: number): string {
