@@ -12,9 +12,7 @@ function gradeColor(grade: string): string {
     case 'A': return '#ffd93d';
     case 'B': return '#3fb950';
     case 'C': return '#58a6ff';
-    case 'D': return '#7d8590';
-    case 'E': return '#484f58';
-    default: return '#30363d';
+    default: return '#7d8590';
   }
 }
 
@@ -136,7 +134,7 @@ function PlayerModal({ player, onClose }: { player: Player; onClose: () => void 
           ['💪 Athletic', p.skills.athletic as unknown as Record<string, number>],
         ] as [string, Record<string, number>][]).map(([label, skills]) => {
           const skillEntries = Object.entries(skills);
-          const learned = skillEntries.filter(([, v]) => skillToGrade(v) !== 'D' && skillToGrade(v) !== 'E' && skillToGrade(v) !== 'F');
+          const learned = skillEntries.filter(([, v]) => skillToGrade(v) !== 'D');
           if (learned.length === 0) return null;
           return (
             <div key={label} className="mb-2">

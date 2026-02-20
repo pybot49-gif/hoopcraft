@@ -16,9 +16,7 @@ export function skillToGrade(value: number): string {
   if (value >= 85) return 'A';
   if (value >= 75) return 'B';
   if (value >= 65) return 'C';
-  if (value >= 55) return 'D';
-  if (value >= 40) return 'E';
-  return 'F';
+  return 'D';
 }
 
 export function skillModifier(value: number): number {
@@ -26,9 +24,7 @@ export function skillModifier(value: number): number {
   if (value >= 85) return 0.98;
   if (value >= 75) return 0.92;
   if (value >= 65) return 0.85;
-  if (value >= 55) return 0.75;
-  if (value >= 40) return 0.6;
-  return 0.4;
+  return 0.75;
 }
 
 export function formatTime(secondsRemaining: number): string {
