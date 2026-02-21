@@ -527,11 +527,15 @@ const report = await page.evaluate(() => {
 console.log('');
 for (const line of report) console.log(line);
 
-// Final score
+// Final score — extract from box score headers "Hawks — 111" and "Wolves — 85"
 const score = await page.evaluate(() => {
   const text = document.body.innerText;
-  const match = text.match(/(\d+)\s*[-–]\s*(\d+)/);
-  return match ? `${match[1]} - ${match[2]}` : 'unknown';
+  const hawksMatch = text.match(/Hawks\s*[—–-]\s*(\d+)/);
+  const wolvesMatch = text.match(/Wolves\s*[—–-]\s*(\d+)/);
+  if (hawksMatch && wolvesMatch) return `${hawksMatch[1]} - ${wolvesMatch[1]}`;
+  // Fallback: look for score in game event text like "(109-85)"
+  const eventMatch = text.match(/\((\d{2,3})-(\d{2,3})\)/);
+  return eventMatch ? `${eventMatch[1]} - ${eventMatch[2]}` : 'unknown';
 });
 console.log(`\nFinal Score: ${score}`);
 

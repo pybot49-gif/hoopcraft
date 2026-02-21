@@ -1174,6 +1174,13 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   const mustAttack = holdTime > 3.5 || state.shotClock < 5;
   const passFirst = holdTime < 1.8 && !mustAttack;
   
+  // Shot usage balancing — don't let one player hog all shots
+  // NBA: max ~25-30 FGA for top scorers. If handler has 50%+ more than team avg, prefer passing
+  const handlerStats = state.boxStats.get(handler.id);
+  const teamPlayers = state.players.filter(p => p.teamIdx === handler.teamIdx);
+  const teamAvgFGA = teamPlayers.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
+  const isHogging = handlerStats && teamAvgFGA > 3 && handlerStats.fga > teamAvgFGA * 1.6;
+  
   // Pass penalty: reduce shot probability when team hasn't moved the ball
   const noPasses = state.passCount === 0;
   const fewPasses = state.passCount < 2;
@@ -1187,12 +1194,12 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 0. COMMITTED DRIVE — once driving, keep going until at rim or completely stopped
   if (handler.isDriving) {
     if (distToBasket < 6) {
-      // At rim — but check for kick-out to open perimeter shooter first
+      // At rim — but check for kick-out to open perimeter shooter first (if not hogging)
       const openPerimeter = openTeammates.find(p => {
         const d = dist(p.pos, basketPos);
         return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 62;
       });
-      if (openPerimeter && state.rng() < 0.35) {
+      if (!isHogging && openPerimeter && state.rng() < 0.35) {
         handler.isDriving = false;
         passBall(state, handler, openPerimeter);
         return;
@@ -1230,7 +1237,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   }
   
   // SUPERSTAR TENDENCIES — signature plays
-  if (handler.player.isSuperstar && !passFirst) {
+  if (handler.player.isSuperstar && !passFirst && !isHogging) {
     const skills = handler.player.skills;
     // Sharpshooter superstar: pull-up 3 more aggressively
     if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen && !fewPasses) {
@@ -1272,6 +1279,10 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     const bestShootingSkill = Math.max(catchShoot, three);
     // Good shooters (≥75) shoot immediately. Decent (65-74) sometimes. Bad (<65) never from 3.
     if (bestShootingSkill >= 70 || (bestShootingSkill >= 60 && state.rng() < 0.35)) {
+      if (isHogging && openTeammates.length > 0) {
+        passBall(state, handler, openTeammates[0]);
+        return;
+      }
       if (!fewPasses || state.rng() < 0.25) { // penalize iso no-pass shots
         attemptShot(state, handler, basketPos);
         return;
@@ -1281,7 +1292,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   }
   
   // 2b. Mid-range catch-and-shoot — just received pass and open in mid-range
-  if (isOpen && holdTime < 1.0 && distToBasket > 10 && distToBasket <= 22) {
+  if (isOpen && holdTime < 1.0 && distToBasket > 10 && distToBasket <= 22 && !isHogging) {
     const midRange = handler.player.skills.shooting.mid_range;
     if (midRange >= 70 && state.rng() < 0.55) {
       attemptShot(state, handler, basketPos);
@@ -1290,6 +1301,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   }
   
   // 2c. Close-range catch-and-finish — received pass near basket, finish immediately
+  //     Don't block this with isHogging — if you're at the rim, finish it
   if (holdTime < 0.8 && distToBasket < 10 && distToBasket > 3) {
     const finishing = handler.player.skills.finishing.layup;
     if (finishing >= 65) {
@@ -1405,6 +1417,10 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   // 3b. Open mid-range — take it if aggressive (and can't drive)
   if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
+    if (isHogging && openTeammates.length > 0 && !mustAttack) {
+      passBall(state, handler, openTeammates[0]);
+      return;
+    }
     if (!noPasses || state.rng() < 0.35) {
       attemptShot(state, handler, basketPos);
       return;
@@ -1415,6 +1431,10 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   if (isOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
     if (three >= 65 || (three >= 60 && aggressive) || mustAttack) {
+      if (isHogging && openTeammates.length > 0 && !mustAttack) {
+        passBall(state, handler, openTeammates[0]);
+        return;
+      }
       if (!noPasses || state.rng() < 0.35) {
         attemptShot(state, handler, basketPos);
         return;
@@ -2063,6 +2083,9 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   // Update possession stage
   state.possessionStage = getPossessionStage(state.shotClock);
   
+  // Shot usage tracking for balancing
+  const teamAvgFGA = offTeam.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
+  
   // If a play is active, let the play drive decisions
   if (state.currentPlay) {
     updateCurrentPlay(state, basketPos, dir);
@@ -2082,19 +2105,49 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       executeReadAndReact(handler, state, basketPos);
       break;
       
-    case 'late':
-      // Give to best scorer, take shots
+    case 'late': {
+      // Give to best scorer, take shots — but not always the same player
       const bestScorer = findBestScorer(offTeam);
-      if (handler !== bestScorer && checkIfOpen(bestScorer, state)) {
+      const bestStats = state.boxStats.get(bestScorer.id);
+      const bestHogging = bestStats && teamAvgFGA > 3 && bestStats.fga > teamAvgFGA * 1.6;
+      // If best scorer is hogging or not open, try to find better options
+      if (handler !== bestScorer && checkIfOpen(bestScorer, state) && !bestHogging) {
         passBall(state, handler, bestScorer);
-      } else {
-        // More aggressive shot taking
-        const distToBasket = dist(handler.pos, basketPos);
-        if (distToBasket < 25) attemptShot(state, handler, basketPos);
-        else executeReadAndReact(handler, state, basketPos);
+        return;
       }
+      // Look for open shooters - prefer ceux with better FG% and lower usage
+      const openTeammates = getOpenTeammates(state, handler);
+      if (openTeammates.length > 0) {
+        // Find best passing target: 3PT shooters first, then best FG%
+        const openThree = openTeammates.find(p => {
+          const d = dist(p.pos, basketPos);
+          return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 65;
+        });
+        if (openThree) {
+          passBall(state, handler, openThree);
+          return;
+        }
+        // Or shooter with best FG% and not hogging
+        const bestOpen = openTeammates.sort((a, b) => {
+          const aStats = state.boxStats.get(a.id) || emptyBoxStats();
+          const bStats = state.boxStats.get(b.id) || emptyBoxStats();
+          const aFGP = aStats.fga > 0 ? aStats.fgm / aStats.fga : 0.45;
+          const bFGP = bStats.fga > 0 ? bStats.fgm / bStats.fga : 0.45;
+          return bFGP - aFGP; // better shooter first
+        })[0];
+        const bestOpenStats = state.boxStats.get(bestOpen.id) || emptyBoxStats();
+        // Don't force feed if player already has >1.5× avg usage
+        if (bestOpenStats.fga < teamAvgFGA * 1.5) {
+          passBall(state, handler, bestOpen);
+          return;
+        }
+      }
+      // More aggressive shot taking
+      const distToBasket2 = dist(handler.pos, basketPos);
+      if (distToBasket2 < 25) attemptShot(state, handler, basketPos);
+      else executeReadAndReact(handler, state, basketPos);
       break;
-      
+    }
     case 'desperation':
       attemptShot(state, handler, basketPos);
       break;
@@ -3098,6 +3151,42 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
     contestModifier *= 0.85;
   }
   
+  // BLOCK CHECK — close defenders with block skill can reject the shot
+  // NBA: ~5 blocks/team/game, ~88 FGA/team → ~5.7% block rate on contested shots at rim
+  if (nearestDef && contestDistance < 4 && distToBasket < 8) {
+    const blockSkill = nearestDef.player.skills.defense.block || 60;
+    const defVertical = nearestDef.player.physical.vertical || 70;
+    const shooterHeight = shooter.player.physical.height;
+    const defHeight = nearestDef.player.physical.height;
+    // Block chance: NBA ~5 blocks/team/game, ~88 FGA → ~5.7% on contested rim shots
+    let blockChance = 0.01 + (blockSkill / 100) * 0.06;
+    if (distToBasket < 4) blockChance *= 1.5; // at the rim — prime block territory
+    if (defHeight > shooterHeight + 5) blockChance *= 1.2; // height advantage
+    if (isDunk) blockChance *= 0.4; // dunks are harder to block
+    if (blockSkill < 65) blockChance *= 0.3; // non-blockers rarely block
+    blockChance = Math.min(0.12, blockChance); // cap at 12%
+    if (state.rng() < blockChance) {
+      addStat(state, nearestDef.id, 'blk');
+      addStat(state, shooter.id, 'fga');
+      if (distToBasket > 22) addStat(state, shooter.id, 'tpa');
+      state.lastEvent = `BLOCKED by ${nearestDef.player.name}!`;
+      // Ball goes loose — treat as missed shot → rebound
+      clearBallCarrier(state);
+      const dir2 = state.possession === 0 ? 1 : -1;
+      state.ball.pos = { ...shooter.pos };
+      state.ball.bounceTarget = { 
+        x: shooter.pos.x - dir2 * (3 + state.rng() * 6),
+        y: shooter.pos.y + (state.rng() - 0.5) * 8 
+      };
+      state.ball.bouncing = true;
+      state.ball.bounceProgress = 0;
+      state.ball.z = 8;
+      state.phase = 'rebound';
+      state.phaseTicks = 0;
+      return;
+    }
+  }
+
   const finalPct = basePct * skillModifier(shotSkill) * contestModifier * (1 + advantage);
   const willScore = state.rng() < finalPct;
 
@@ -3143,13 +3232,14 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   // FOUL CHECK — fouls happen more on drives/layups when contested
   // NBA: ~22 FTA/game per team, ~80-90 possessions, ~25% of shots are at rim
   const isFouled = (() => {
-    if (contestDistance > 6) return false; // no contest = no foul
+    if (contestDistance > 8) return false; // no contest = no foul
     let foulChance = 0;
-    if (distToBasket < 5) foulChance = 0.15;       // layup/dunk — most fouls
-    else if (distToBasket < 10) foulChance = 0.08;  // floater range
-    else if (distToBasket < 22) foulChance = 0.03;  // mid-range
-    else foulChance = 0.04;                          // 3pt foul (rarer but happens)
+    if (distToBasket < 5) foulChance = 0.22;       // layup/dunk — most fouls (NBA: ~40% of FTA from paint)
+    else if (distToBasket < 10) foulChance = 0.12;  // floater range
+    else if (distToBasket < 22) foulChance = 0.05;  // mid-range
+    else foulChance = 0.06;                          // 3pt foul (rarer but happens)
     if (contestDistance < 3) foulChance *= 1.5;      // heavily contested = more contact
+    if (contestDistance < 5) foulChance *= 1.2;      // moderate contest
     return state.rng() < foulChance;
   })();
   
