@@ -210,50 +210,60 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
     const atTarget = !player.targetPos || dist(player.pos, player.targetPos) < 1.5;
     const isBig = player.player.position === 'C' || player.player.position === 'PF';
     
-    // Staggered check — each player evaluates every ~0.5 seconds (30 ticks)
-    // Much more frequent than before (was 90 ticks = 1.5s, now 30 = 0.5s)
-    const moveHash = (state.phaseTicks + player.courtIdx * 17) % 30;
-    if (moveHash !== 0 && !atTarget) continue; // only re-evaluate when at target or on schedule
+    // Staggered check — each player evaluates every ~0.33 seconds (20 ticks)
+    const moveHash = (state.phaseTicks + player.courtIdx * 13) % 20;
+    if (moveHash !== 0 && !atTarget) continue;
     if (moveHash !== 0) continue;
     
     const roll = state.rng();
     
     // ── CENTERS & PF: PAINT PRESENCE ──────────────────────────────────
-    // Bigs should actively seek paint position when they have postUp or screener roles
-    // But only ONE big should be in paint at a time to avoid clogging
-    if (isBig && (player.currentRole === 'postUp' || player.currentRole === 'screener')) {
-      const otherBigInPaint = offTeam.some(p => 
+    // Centers should be in the paint ~30-40% of the time. PFs ~15-20%.
+    // Only ONE big in deep paint at a time (other spaces to high post/elbow).
+    if (isBig) {
+      const isCenter = player.player.position === 'C';
+      const otherBigInDeepPaint = offTeam.some(p => 
         p !== player && 
         (p.player.position === 'C' || p.player.position === 'PF') &&
-        dist(p.pos, basketPos) < 10
+        dist(p.pos, basketPos) < 8
       );
       
-      if (!otherBigInPaint) {
-        // Duck-in / seal: move toward low block or short roll area
-        if (distToBasket > 12 && roll < 0.45) {
-          const side = player.pos.y > basketPos.y ? 1 : -1;
+      // Centers ALWAYS try to get into paint when they're far away
+      // PFs only do it when they have postUp role
+      const wantsPaint = isCenter || player.currentRole === 'postUp';
+      
+      if (wantsPaint && !otherBigInDeepPaint) {
+        if (distToBasket > 10) {
+          // Move to low block — high probability for centers
+          const paintChance = isCenter ? 0.7 : 0.45;
+          if (roll < paintChance) {
+            const side = player.pos.y > basketPos.y ? 1 : -1;
+            player.targetPos = {
+              x: basketPos.x - dir * (4 + state.rng() * 4), // 4-8ft from basket
+              y: basketPos.y + side * (3 + state.rng() * 4)
+            };
+            player.isCutting = true;
+            continue;
+          }
+        }
+        // Near paint — seal/adjust position
+        if (distToBasket < 10) {
           player.targetPos = {
-            x: basketPos.x - dir * (5 + state.rng() * 4), // 5-9ft from basket
-            y: basketPos.y + side * (4 + state.rng() * 3)  // offset from center
+            x: basketPos.x - dir * (3 + state.rng() * 4),
+            y: player.pos.y + (state.rng() - 0.5) * 5
           };
+          continue;
+        }
+      } else if (wantsPaint && otherBigInDeepPaint) {
+        // Other big in paint — go to high post / elbow / short corner
+        if (distToBasket < 10 || roll < 0.3) {
+          const highPostTargets = [
+            { x: basketPos.x - dir * 14, y: basketPos.y - 6 }, // left elbow
+            { x: basketPos.x - dir * 14, y: basketPos.y + 6 }, // right elbow
+            { x: basketPos.x - dir * 10, y: basketPos.y + (state.rng() > 0.5 ? 12 : -12) }, // short corner
+          ];
+          player.targetPos = highPostTargets[Math.floor(state.rng() * highPostTargets.length)];
           player.isCutting = true;
-          continue;
-        }
-        // Already near paint — small seal adjustment
-        if (distToBasket < 12 && roll < 0.3) {
-          player.targetPos = {
-            x: basketPos.x - dir * (4 + state.rng() * 3),
-            y: player.pos.y + (state.rng() - 0.5) * 4
-          };
-          continue;
-        }
-      } else {
-        // Other big in paint — space to high post / elbow
-        if (distToBasket < 12 && roll < 0.4) {
-          player.targetPos = {
-            x: basketPos.x - dir * (14 + state.rng() * 4), // elbow/high post
-            y: basketPos.y + (state.rng() - 0.5) * 12
-          };
           continue;
         }
       }
@@ -345,7 +355,7 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
       }
     }
     
-    // ── DEFAULT DRIFT — subtle spacing adjustment ─────────────────────
+    // ── DEFAULT DRIFT — active spacing adjustment (never stand still) ──
     if (atTarget) {
       const teammates = offTeam.filter(p => p !== player && p !== handler);
       let bestDrift = player.pos;
@@ -361,7 +371,10 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
           bestDrift = candidate;
         }
       }
-      if (bestMinDist > 5) player.targetPos = bestDrift;
+      if (bestMinDist > 5) {
+        player.targetPos = bestDrift;
+        player.isCutting = true; // flag as active movement
+      }
     }
   }
 }
@@ -1228,6 +1241,24 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
       }
     }
     // Non-shooter wide open? Drive or pass instead (fall through to decision tree)
+  }
+  
+  // 2b. Mid-range catch-and-shoot — just received pass and open in mid-range
+  if (isOpen && holdTime < 1.0 && distToBasket > 10 && distToBasket <= 22) {
+    const midRange = handler.player.skills.shooting.mid_range;
+    if (midRange >= 70 && state.rng() < 0.55) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+  }
+  
+  // 2c. Close-range catch-and-finish — received pass near basket, finish immediately
+  if (holdTime < 0.8 && distToBasket < 10 && distToBasket > 3) {
+    const finishing = handler.player.skills.finishing.layup;
+    if (finishing >= 65 && state.rng() < 0.6) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
   }
   
   // For all other decisions, only evaluate every ~0.5s (not every tick)
@@ -2360,14 +2391,14 @@ function executeRoleAction(player: SimPlayer, action: RoleAction, state: GameSta
       findOpenSlot(player, state);
       break;
     case 'hold': {
-      // "Hold" doesn't mean stand still — maintain position with active micro-movement
+      // "Hold" = maintain position with active micro-movement (jab steps, sway)
       const atPos = !player.targetPos || dist(player.pos, player.targetPos) < 1.5;
       if (atPos) {
-        // Small spacing drift — jab steps, positional adjustments
         player.targetPos = {
-          x: player.pos.x + (state.rng() - 0.5) * 4,
-          y: Math.max(3, Math.min(47, player.pos.y + (state.rng() - 0.5) * 4))
+          x: player.pos.x + (state.rng() - 0.5) * 5,
+          y: Math.max(3, Math.min(47, player.pos.y + (state.rng() - 0.5) * 5))
         };
+        player.isCutting = true; // counts as active movement
       }
       break;
     }

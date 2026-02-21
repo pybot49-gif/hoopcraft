@@ -116,7 +116,7 @@ const report = await page.evaluate(() => {
   let alleyOops = 0, assists = 0;
   let lastAssists = [0, 0];
   const shotTypes = {}; // event text → count
-  const passTypes = { chest: 0, skip: 0, lob: 0, bounce: 0, outlet: 0, alleyoop: 0, unknown: 0 };
+  const passTypes = { chest: 0, overhead: 0, lob: 0, bounce: 0, outlet: 0, alleyoop: 0, unknown: 0 };
 
   // Movement tracking per player
   const initPlayer = (p) => ({
@@ -159,7 +159,7 @@ const report = await page.evaluate(() => {
       }
       // Pass type
       if (ev.includes('chest pass')) passTypes.chest++;
-      else if (ev.includes('skip pass')) passTypes.skip++;
+      else if (ev.includes('overhead pass')) passTypes.overhead++;
       else if (ev.includes('lob pass')) passTypes.lob++;
       else if (ev.includes('bounce pass')) passTypes.bounce++;
       else if (ev.includes('outlet')) passTypes.outlet++;
