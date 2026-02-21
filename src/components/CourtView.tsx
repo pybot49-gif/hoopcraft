@@ -989,12 +989,17 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   }
   
   // 2. Wide open catch-and-shoot — react immediately (no decision tick needed)
+  //    BUT only if you're actually a shooter! Non-shooters should pass or drive.
   if (isWideOpen && holdTime < 0.5 && distToBasket > 22 && distToBasket < 27) {
+    const catchShoot = handler.player.skills.shooting.catch_and_shoot;
     const three = handler.player.skills.shooting.three_point;
-    if (three >= 70 || state.rng() < 0.7) {
+    const bestShootingSkill = Math.max(catchShoot, three);
+    // Good shooters (≥75) shoot immediately. Decent (65-74) sometimes. Bad (<65) never from 3.
+    if (bestShootingSkill >= 75 || (bestShootingSkill >= 65 && state.rng() < 0.3)) {
       attemptShot(state, handler, basketPos);
       return;
     }
+    // Non-shooter wide open? Drive or pass instead (fall through to decision tree)
   }
   
   // For all other decisions, only evaluate every ~0.5s (not every tick)
@@ -1027,11 +1032,18 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     return;
   }
   
-  // 3c. Open 3 — take it
+  // 3c. Open 3 — only take if you can actually shoot
   if (isOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
-    if (three >= 65 || aggressive) {
+    // Good shooters take open 3s. Non-shooters only when desperate.
+    if (three >= 70 || (three >= 65 && aggressive) || mustAttack) {
       attemptShot(state, handler, basketPos);
+      return;
+    }
+    // Non-shooter open at 3pt line → drive instead if lane is clear
+    if (three < 65 && laneClear) {
+      handler.targetPos = { ...basketPos };
+      handler.isCutting = true;
       return;
     }
   }
@@ -2005,10 +2017,16 @@ function checkIfOpen(player: SimPlayer, state: GameState): boolean {
 
 function isPassLaneBlocked(from: SimPlayer, to: SimPlayer, state: GameState): boolean {
   const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  const passDist = dist(from.pos, to.pos);
   
   for (const def of defTeam) {
     const distToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
-    if (distToLine < 2.5) {
+    const defDistFromPasser = dist(def.pos, from.pos);
+    // Defender must be between passer and target (not behind passer)
+    if (defDistFromPasser > passDist) continue;
+    // Shorter passes need tighter blocking; long passes have more room to go over
+    const blockRadius = passDist > 20 ? 1.5 : 2.5;
+    if (distToLine < blockRadius) {
       return true;
     }
   }
@@ -2287,7 +2305,7 @@ function assignInitialSlots(state: GameState, offTeam: SimPlayer[], slots: Map<S
   }
 }
 
-// Track recently used plays to ensure variety
+// Track recently used plays to ensure variety (reset on game init)
 let recentPlays: string[] = [];
 
 function selectPlay(state: GameState, offTeam: SimPlayer[]): void {
@@ -2348,8 +2366,11 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   let isDunk = false;
   
   if (distToBasket > 22) {
-    // 3-pointer
-    shotSkill = shooter.player.skills.shooting.three_point;
+    // 3-pointer — use catch_and_shoot if player just caught the ball
+    const isCatchAndShoot = state.dribbleTime < 0.8; // shot within 0.8s of receiving
+    const threeSkill = shooter.player.skills.shooting.three_point;
+    const casSkill = shooter.player.skills.shooting.catch_and_shoot;
+    shotSkill = isCatchAndShoot ? Math.max(threeSkill, casSkill) : threeSkill;
     basePct = 0.33; // NBA avg ~36%, base before skill modifier
   } else if (distToBasket > 14) {
     // Long mid-range
@@ -2367,14 +2388,17 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
     // At the rim — layup or dunk
     const dunkSkill = shooter.player.skills.finishing.dunk;
     const layupSkill = shooter.player.skills.finishing.layup;
-    // Dunk if athletic enough and close enough
-    if (dunkSkill >= 70 && distToBasket < 2.5) {
+    // Dunk if athletic enough, close enough, and no shot-blocker right there
+    const nearDef = findNearestDefender(shooter, state);
+    const defClose = nearDef && dist(nearDef.pos, shooter.pos) < 4;
+    const defCanBlock = defClose && nearDef && nearDef.player.skills.defense.block >= 75;
+    if (dunkSkill >= 70 && distToBasket < 2.5 && shooter.player.physical.vertical >= 65 && !defCanBlock) {
       isDunk = true;
       shotSkill = dunkSkill;
-      basePct = 0.78; // dunks are very high percentage
+      basePct = 0.82; // dunks are very high percentage
     } else {
       shotSkill = layupSkill;
-      basePct = 0.72; // point-blank layup
+      basePct = 0.68; // point-blank layup (slightly contested)
     }
   }
 
@@ -2640,6 +2664,7 @@ function resetPossession(state: GameState): void {
 }
 
 function initGameState(): GameState {
+  recentPlays = []; // Reset play history for new game
   const rng = createRng(Date.now());
   const allPlayers: SimPlayer[] = [];
 
