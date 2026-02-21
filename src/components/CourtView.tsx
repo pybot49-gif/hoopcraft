@@ -200,8 +200,8 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
     if (player === handler) continue;
     if (player.isScreening || player.isCutting) continue;
     
-    // Each player checks for movement every ~2.5 seconds, staggered
-    const moveHash = (state.phaseTicks + player.courtIdx * 37) % 150;
+    // Each player checks for movement every ~1.5 seconds, staggered
+    const moveHash = (state.phaseTicks + player.courtIdx * 37) % 90;
     if (moveHash !== 0) continue;
     
     const defender = findNearestDefender(player, state);
@@ -286,16 +286,26 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
 function enforceFloorSpacing(state: GameState): void {
   const offTeam = state.players.filter(p => p.teamIdx === state.possession);
   
-  // Check for players within 10ft of each other (too close)
+  // Check for players too close — enforce minimum spacing
+  // Ball handler exempt; bigs near basket can be closer (8ft), perimeter players need 12ft
   for (let i = 0; i < offTeam.length; i++) {
     for (let j = i + 1; j < offTeam.length; j++) {
       const p1 = offTeam[i];
       const p2 = offTeam[j];
-      const distance = dist(p1.pos, p2.pos);
+      if (p1.currentRole === 'ballHandler' || p2.currentRole === 'ballHandler') continue;
+      if (p1.isCutting || p2.isCutting || p1.isScreening || p2.isScreening) continue;
       
-      if (distance < 10 && p1.currentRole !== 'ballHandler' && p2.currentRole !== 'ballHandler') {
-        // One player needs to relocate
-        const playerToRelocate = p1.fatigue > p2.fatigue ? p1 : p2;
+      const distance = dist(p1.pos, p2.pos);
+      const bothBigs = (p1.player.position === 'C' || p1.player.position === 'PF') &&
+                       (p2.player.position === 'C' || p2.player.position === 'PF');
+      const minDist = bothBigs ? 8 : 12; // Perimeter players need more space
+      
+      if (distance < minDist) {
+        // Relocate the less important role (spacer > cutter > postUp > screener)
+        const rolePriority: Record<string, number> = { ballHandler: 4, screener: 3, postUp: 2, cutter: 1, spacer: 0 };
+        const p1Priority = rolePriority[p1.currentRole || 'spacer'] ?? 0;
+        const p2Priority = rolePriority[p2.currentRole || 'spacer'] ?? 0;
+        const playerToRelocate = p1Priority <= p2Priority ? p1 : p2;
         findOpenSlot(playerToRelocate, state);
       }
     }
@@ -618,14 +628,30 @@ function assignRoles(state: GameState): void {
   // Clear existing roles
   state.roles.clear();
   
-  // Find ball handler
-  const ballHandler = getBallHandler(state);
+  // Find ball handler — prefer PG as primary ball handler
+  let ballHandler = getBallHandler(state);
   if (ballHandler) {
-    state.roles.set(ballHandler.id, 'ballHandler');
+    // If a non-PG has the ball but PG is nearby, PG still gets ballHandler role
+    // (PG will seek the ball via off-ball movement / play design)
+    const pg = offTeam.find(p => p.player.position === 'PG');
+    if (pg && pg !== ballHandler && !pg.isCutting) {
+      // PG gets ballHandler role — will call for ball or run point
+      state.roles.set(pg.id, 'ballHandler');
+      // Actual ball carrier gets a secondary role
+      const carrierPos = ballHandler.player.position;
+      if (carrierPos === 'C' || carrierPos === 'PF') {
+        state.roles.set(ballHandler.id, 'postUp');
+      } else {
+        state.roles.set(ballHandler.id, 'spacer');
+      }
+      ballHandler = pg; // For remaining role assignment, treat PG as handler
+    } else {
+      state.roles.set(ballHandler.id, 'ballHandler');
+    }
   }
   
   // Assign roles based on tactic and player attributes
-  const remainingPlayers = offTeam.filter(p => p !== ballHandler);
+  const remainingPlayers = offTeam.filter(p => !state.roles.has(p.id));
   
   if (tactic === 'iso' && ballHandler?.player.isSuperstar) {
     // ISO: superstar ballHandler, everyone else is spacer
@@ -1117,6 +1143,15 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   // 4. Pass to create a better shot (but only if not holding too long)
   if (!mustAttack) {
+    // SUPERSTAR TARGETING — feed the star! (~40% chance to look for superstar first)
+    if (state.rng() < 0.4) {
+      const superstar = openTeammates.find(p => p.player.isSuperstar);
+      if (superstar) {
+        passBall(state, handler, superstar);
+        return;
+      }
+    }
+    
     // Roller cutting to basket
     const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
     if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
@@ -1378,10 +1413,12 @@ function tick(state: GameState): GameState {
     enforceFloorSpacing(state);
     fillEmptySlots(state);
   }
-  // Off-ball movement during action only (not setup — players still positioning)
-  if (state.phase === 'action') {
+  // Off-ball movement during action AND setup (players shouldn't stand idle during setup)
+  if (state.phase === 'action' || state.phase === 'setup') {
     offBallMovement(state, offTeam, basketPos, dir);
   }
+  // During advance, wings and trailers already have targets from handleAdvance
+  // During inbound, receivers already have targets from handleInbound
 
   // Move all players
   for (const p of state.players) {
@@ -1446,8 +1483,8 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     };
   }
   
-  // Stage 1 (0-2.5s): Set up inbound — ref handles ball, players get in position
-  if (state.phaseTicks < 150) {
+  // Stage 1 (0-1.5s): Set up inbound — ref handles ball, players get in position
+  if (state.phaseTicks < 90) {
     // Inbounder stands OUT OF BOUNDS behind baseline
     const inbounder = offTeam[0];
     const baselineX = dir > 0 ? 0.5 : COURT_W - 0.5;
@@ -1471,8 +1508,8 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       offTeam[i].targetPos = { ...receiverSpots[Math.min(i - 1, receiverSpots.length - 1)] };
     }
     
-  // Stage 2 (2.5-4s): Receiver cuts toward ball
-  } else if (state.phaseTicks < 240) {
+  // Stage 2 (1.5-2.5s): Receiver cuts toward ball
+  } else if (state.phaseTicks < 150) {
     const inbounder = getBallHandler(state);
     if (inbounder) {
       const receiver = offTeam.find(p => p !== inbounder && p.player.position === 'PG') 
@@ -1567,11 +1604,11 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     // Fast break detection: if most defenders haven't crossed half court, skip setup
     const defPastHalf = defTeam.filter(d => {
       return state.possession === 0 
-        ? d.pos.x > HALF_X + 10  // team 0 attacks right
-        : d.pos.x < HALF_X - 10; // team 1 attacks left
+        ? d.pos.x > HALF_X + 5  // team 0 attacks right — tighter check
+        : d.pos.x < HALF_X - 5; // team 1 attacks left — tighter check
     }).length;
     
-    if (defPastHalf <= 2) {
+    if (defPastHalf <= 1) { // Was <= 2, too easy to trigger. NBA ~15-20% transition
       // Fast break! Count advantage
       const offPastHalf = offTeam.filter(p => {
         return state.possession === 0
