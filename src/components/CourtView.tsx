@@ -1693,6 +1693,28 @@ function tick(state: GameState): GameState {
   // Off-ball movement during action AND setup (players shouldn't stand idle during setup)
   if (state.phase === 'action' || state.phase === 'setup') {
     offBallMovement(state, offTeam, basketPos, dir);
+    
+    // Center paint override — centers gravitate toward paint even if plays put them elsewhere
+    // Only apply when not actively cutting/screening (don't interrupt play actions)
+    for (const p of offTeam) {
+      if (p.player.position !== 'C') continue;
+      if (p.isCutting || p.isScreening || p.hasBall) continue;
+      const dBasket = dist(p.pos, basketPos);
+      if (dBasket > 14) {
+        // Center too far from paint — override target to paint area
+        const otherBigNearPaint = offTeam.some(op => 
+          op !== p && (op.player.position === 'C' || op.player.position === 'PF') && dist(op.pos, basketPos) < 8
+        );
+        if (!otherBigNearPaint) {
+          const side = p.pos.y > basketPos.y ? 1 : -1;
+          p.targetPos = {
+            x: basketPos.x - dir * (5 + state.rng() * 4),
+            y: basketPos.y + side * (3 + state.rng() * 4)
+          };
+          p.isCutting = true;
+        }
+      }
+    }
   }
   // During advance, wings and trailers already have targets from handleAdvance
   // During inbound, receivers already have targets from handleInbound
@@ -2753,12 +2775,13 @@ function updateBallFlight(state: GameState, dt: number): void {
             : shotDistance < 3 ? 'at the rim' 
             : shotDistance < 8 ? 'layup' 
             : `${pts}pts`;
-          // Assist check: if last pass was within 5 seconds and from different player
-          // NBA assist window is generous — any pass that "led to the score"
+          // Assist check: if last pass was within 7 seconds and from different player
+          // NBA assist window is very generous — any pass that "led to the score"
+          // Even dribble moves after a pass count if the pass created the opportunity
           const shooterId = (state.ball as any).shooterId;
           let assistStr = '';
           if (state.lastPassFrom && state.lastPassFrom !== shooterId && 
-              state.gameTime - state.lastPassTime < 5.0) {
+              state.gameTime - state.lastPassTime < 7.0) {
             const assister = state.players.find(p => p.id === state.lastPassFrom);
             if (assister) {
               state.assists[scoringTeam]++;
