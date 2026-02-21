@@ -104,6 +104,24 @@ interface SimPlayer {
 
 type MissType = 'rim_out' | 'back_iron' | 'airball' | 'blocked' | 'front_rim' | null;
 
+interface PlayerBoxStats {
+  pts: number;
+  reb: number;
+  oreb: number;
+  ast: number;
+  stl: number;
+  blk: number;
+  tov: number;
+  pf: number;
+  fgm: number;
+  fga: number;
+  tpm: number;
+  tpa: number;
+  ftm: number;
+  fta: number;
+  min: number; // minutes played
+}
+
 interface BallState {
   pos: Vec2;
   z: number; // height off the ground in feet (0 = floor, 10 = rim height)
@@ -172,6 +190,7 @@ interface GameState {
   deadBallTimer: number;   // pause after made baskets before inbound
   assists: [number, number]; // team assist counts
   lastAssist: string | null; // name of last assister (for event log)
+  boxStats: Map<string, PlayerBoxStats>; // keyed by player id
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1589,11 +1608,15 @@ function tick(state: GameState): GameState {
 
   // Violations
   if (state.shotClock <= 0 && state.gameStarted) {
+    const ballHandler = state.players.find(p => p.hasBall);
+    if (ballHandler) addStat(state, ballHandler.id, 'tov');
     changePossession(state, 'Shot clock violation');
     return state;
   }
   
   if (!state.crossedHalfCourt && state.advanceClock > 8) {
+    const ballHandler = state.players.find(p => p.hasBall);
+    if (ballHandler) addStat(state, ballHandler.id, 'tov');
     changePossession(state, '8-second violation');
     return state;
   }
@@ -2090,6 +2113,10 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
       state.ball.carrier = nearestDefender;
+      addStat(state, nearestDefender.id, 'stl');
+      // Turnover for ball handler
+      const handler = state.players.find(p => p.hasBall && p.teamIdx === state.possession);
+      if (handler) addStat(state, handler.id, 'tov');
       state.lastEvent = `${nearestDefender.player.name} steals the ball!`;
       changePossession(state, '');
       return;
@@ -2103,6 +2130,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     // Reach-in on ball handler
     if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 3) {
       if (state.rng() < 0.08) {
+        addStat(state, nearestDefender.id, 'pf');
         state.lastEvent = `Reaching foul on ${nearestDefender.player.name}!`;
         // Side-out, same team keeps possession (simplified — no bonus tracking)
         return;
@@ -2114,6 +2142,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       const assignedId = state.defAssignments.get(def.id);
       const assigned = state.players.find(p => p.id === assignedId);
       if (assigned && dist(def.pos, assigned.pos) < 2.5 && state.rng() < 0.03) {
+        addStat(state, def.id, 'pf');
         state.lastEvent = `Off-ball foul on ${def.player.name}!`;
         return;
       }
@@ -2142,9 +2171,12 @@ function handleFreeThrows(state: GameState): void {
     const ftPct = 0.5 + (ftSkill / 100) * 0.35; // range: 50%-85%
     const made = state.rng() < ftPct;
     
+    addStat(state, ft.shooter.id, 'fta');
     if (made) {
       state.score[state.possession] += 1;
       ft.made++;
+      addStat(state, ft.shooter.id, 'ftm');
+      addStat(state, ft.shooter.id, 'pts');
       state.lastEvent = `${ft.shooter.player.name} makes FT ${ft.made}/${ft.total} (${state.score[0]}-${state.score[1]})`;
     } else {
       state.lastEvent = `${ft.shooter.player.name} misses FT`;
@@ -2292,6 +2324,8 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     state.ball.carrier = rebounder;
     
     const rebType = rebounder.teamIdx !== state.possession ? 'defensive' : 'offensive';
+    addStat(state, rebounder.id, 'reb');
+    if (rebType === 'offensive') addStat(state, rebounder.id, 'oreb');
     state.lastEvent = `${rebounder.player.name} grabs the ${rebType} rebound!`;
     
     if (rebounder.teamIdx !== state.possession) {
@@ -2791,7 +2825,15 @@ function updateBallFlight(state: GameState, dt: number): void {
           const shooterName = (state.ball as any).shooterName || 'Player';
           
           const scoringTeam = state.possession;
+          const shooterId = (state.ball as any).shooterId;
           state.score[scoringTeam] += pts;
+          // Box stats: FGM, FGA, points (+3PM/3PA)
+          if (shooterId) {
+            addStat(state, shooterId, 'pts', pts);
+            addStat(state, shooterId, 'fgm');
+            addStat(state, shooterId, 'fga');
+            if (pts === 3) { addStat(state, shooterId, 'tpm'); addStat(state, shooterId, 'tpa'); }
+          }
           const isAlleyOop = (state.ball as any).isAlleyOop;
           const scoreType = isAlleyOop ? 'ALLEY-OOP DUNK!' 
             : pts === 3 ? '3-pointer' 
@@ -2801,7 +2843,6 @@ function updateBallFlight(state: GameState, dt: number): void {
           // Assist check: if last pass was within 7 seconds and from different player
           // NBA assist window is very generous — any pass that "led to the score"
           // Even dribble moves after a pass count if the pass created the opportunity
-          const shooterId = (state.ball as any).shooterId;
           let assistStr = '';
           if (state.lastPassFrom && state.lastPassFrom !== shooterId && 
               state.gameTime - state.lastPassTime < 7.0) {
@@ -2809,12 +2850,20 @@ function updateBallFlight(state: GameState, dt: number): void {
             if (assister) {
               state.assists[scoringTeam]++;
               state.lastAssist = assister.player.name;
+              addStat(state, assister.id, 'ast');
               assistStr = ` (ast: ${assister.player.name})`;
             }
           }
           state.lastEvent = `${shooterName} scores! ${scoreType}${assistStr} (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
+          // Miss — box stats: FGA (+3PA)
+          const missShooterId = (state.ball as any).shooterId;
+          if (missShooterId) {
+            addStat(state, missShooterId, 'fga');
+            const basket2 = getTeamBasket(state.possession);
+            if (dist(state.ball.flightFrom, basket2) > 22) addStat(state, missShooterId, 'tpa');
+          }
           // Miss — start bounce animation
           const basket = getTeamBasket(state.possession);
           const missType = state.ball.missType || 'rim_out';
@@ -3106,8 +3155,16 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   
   if (isFouled) {
     const pts = distToBasket > 22 ? 3 : 2;
+    // Box stats: shooting foul on defender
+    if (nearestDef) addStat(state, nearestDef.id, 'pf');
+    // FGA counted for shooter (and FGM + pts if and-one)
+    addStat(state, shooter.id, 'fga');
+    if (distToBasket > 22) addStat(state, shooter.id, 'tpa');
     if (willScore) {
       // AND-ONE! Shot counts + 1 FT
+      addStat(state, shooter.id, 'fgm');
+      addStat(state, shooter.id, 'pts', pts);
+      if (distToBasket > 22) addStat(state, shooter.id, 'tpm');
       state.score[state.possession] += pts;
       state.lastEvent = `AND ONE! ${shooterName} scores ${pts} + FT! (${state.score[0]}-${state.score[1]})`;
       state.freeThrows = { shooter, made: 0, total: 1, andOne: true };
@@ -3411,6 +3468,16 @@ function resetPossession(state: GameState): void {
   state.ball.missType = null;
 }
 
+function emptyBoxStats(): PlayerBoxStats {
+  return { pts: 0, reb: 0, oreb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0, min: 0 };
+}
+
+function addStat(state: GameState, playerId: string, stat: keyof PlayerBoxStats, value = 1) {
+  let s = state.boxStats.get(playerId);
+  if (!s) { s = emptyBoxStats(); state.boxStats.set(playerId, s); }
+  (s[stat] as number) += value;
+}
+
 function initGameState(): GameState {
   recentPlays = []; // Reset play history for new game
   const rng = createRng(Date.now());
@@ -3510,6 +3577,7 @@ function initGameState(): GameState {
     assists: [0, 0],
     lastAssist: null,
     deadBallTimer: 0,
+    boxStats: new Map(allPlayers.map(p => [p.id, emptyBoxStats()])),
   };
 }
 
@@ -4128,6 +4196,90 @@ export function CourtView() {
         </div>
         <div>{gs.lastEvent}</div>
       </div>
+
+      {/* Box Score */}
+      {gs.gameStarted && (() => {
+        const teams = [
+          { name: 'Hawks', color: '#f85149', teamIdx: 0 as const },
+          { name: 'Wolves', color: '#58a6ff', teamIdx: 1 as const },
+        ];
+        const totalMin = Math.round((48 * 60 - gs.clockSeconds + (gs.quarter - 1) * 12 * 60) / 60);
+        return (
+          <div className="w-full max-w-4xl text-xs font-mono">
+            {teams.map(team => {
+              const players = gs.players.filter(p => p.teamIdx === team.teamIdx);
+              return (
+                <div key={team.teamIdx} className="mb-3">
+                  <div className="font-bold mb-1 text-sm" style={{ color: team.color }}>
+                    {team.name} — {gs.score[team.teamIdx]}
+                  </div>
+                  <table className="w-full border-collapse">
+                    <thead>
+                      <tr className="text-[var(--color-text-dim)] border-b border-[var(--color-border)]">
+                        <th className="text-left py-1 pr-2 w-32">Player</th>
+                        <th className="text-center px-1 w-8">PTS</th>
+                        <th className="text-center px-1 w-8">REB</th>
+                        <th className="text-center px-1 w-8">AST</th>
+                        <th className="text-center px-1 w-8">STL</th>
+                        <th className="text-center px-1 w-8">BLK</th>
+                        <th className="text-center px-1 w-8">TO</th>
+                        <th className="text-center px-1 w-8">PF</th>
+                        <th className="text-center px-1 w-16">FG</th>
+                        <th className="text-center px-1 w-16">3PT</th>
+                        <th className="text-center px-1 w-16">FT</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {players.map(p => {
+                        const s = gs.boxStats.get(p.id) || emptyBoxStats();
+                        return (
+                          <tr key={p.id} className="border-b border-[var(--color-border)] border-opacity-30 hover:bg-[var(--color-surface-hover)]">
+                            <td className="text-left py-0.5 pr-2 truncate" style={{ color: team.color }}>
+                              <span className="text-[var(--color-text-dim)] mr-1">{p.player.position}</span>
+                              {p.player.name.split(' ').pop()}
+                            </td>
+                            <td className="text-center font-bold" style={{ color: s.pts >= 20 ? '#ffd700' : 'inherit' }}>{s.pts}</td>
+                            <td className="text-center">{s.reb}</td>
+                            <td className="text-center">{s.ast}</td>
+                            <td className="text-center">{s.stl}</td>
+                            <td className="text-center">{s.blk}</td>
+                            <td className="text-center">{s.tov}</td>
+                            <td className="text-center">{s.pf}</td>
+                            <td className="text-center">{s.fgm}-{s.fga}</td>
+                            <td className="text-center">{s.tpm}-{s.tpa}</td>
+                            <td className="text-center">{s.ftm}-{s.fta}</td>
+                          </tr>
+                        );
+                      })}
+                      <tr className="font-bold text-[var(--color-text-dim)]">
+                        <td className="text-left py-0.5 pr-2">TOTAL</td>
+                        {(() => {
+                          const totals = players.reduce((acc, p) => {
+                            const s = gs.boxStats.get(p.id) || emptyBoxStats();
+                            return { pts: acc.pts + s.pts, reb: acc.reb + s.reb, ast: acc.ast + s.ast, stl: acc.stl + s.stl, blk: acc.blk + s.blk, tov: acc.tov + s.tov, pf: acc.pf + s.pf, fgm: acc.fgm + s.fgm, fga: acc.fga + s.fga, tpm: acc.tpm + s.tpm, tpa: acc.tpa + s.tpa, ftm: acc.ftm + s.ftm, fta: acc.fta + s.fta };
+                          }, { pts: 0, reb: 0, ast: 0, stl: 0, blk: 0, tov: 0, pf: 0, fgm: 0, fga: 0, tpm: 0, tpa: 0, ftm: 0, fta: 0 });
+                          return (<>
+                            <td className="text-center">{totals.pts}</td>
+                            <td className="text-center">{totals.reb}</td>
+                            <td className="text-center">{totals.ast}</td>
+                            <td className="text-center">{totals.stl}</td>
+                            <td className="text-center">{totals.blk}</td>
+                            <td className="text-center">{totals.tov}</td>
+                            <td className="text-center">{totals.pf}</td>
+                            <td className="text-center">{totals.fgm}-{totals.fga}</td>
+                            <td className="text-center">{totals.tpm}-{totals.tpa}</td>
+                            <td className="text-center">{totals.ftm}-{totals.fta}</td>
+                          </>);
+                        })()}
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              );
+            })}
+          </div>
+        );
+      })()}
     </div>
   );
 }
