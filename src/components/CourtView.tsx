@@ -685,12 +685,13 @@ function updateDefenseAssignments(state: GameState): void {
   const basket = getTeamBasket(state.possession);
   
   if (tactic === 'man') {
-    // Man-to-man defense
-    state.defAssignments.clear();
-    
-    // Direct assignment by position/index
-    for (let i = 0; i < Math.min(defTeam.length, offTeam.length); i++) {
-      state.defAssignments.set(defTeam[i].id, offTeam[i].id);
+    // Only rebuild assignments if empty (possession change / init)
+    // Switches happen via handleScreenDefense, not here
+    if (state.defAssignments.size === 0) {
+      // Position-based assignment: match by roster index
+      for (let i = 0; i < Math.min(defTeam.length, offTeam.length); i++) {
+        state.defAssignments.set(defTeam[i].id, offTeam[i].id);
+      }
     }
     
     // Position each defender
@@ -832,12 +833,11 @@ function handleHelpDefense(state: GameState): void {
   
   const basket = getTeamBasket(state.possession);
   const distToBasket = dist(handler.pos, basket);
+  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+  const offTeam = state.players.filter(p => p.teamIdx === state.possession);
   
   // Help defense triggers when ball handler penetrates within 15ft
   if (distToBasket < 15) {
-    const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
-    const offTeam = state.players.filter(p => p.teamIdx === state.possession);
-    
     const ballDefender = findDefenderOf(handler, state);
     const helpCandidates = defTeam
       .filter(d => d !== ballDefender)
@@ -862,7 +862,7 @@ function handleHelpDefense(state: GameState): void {
             y: abandonedPlayer.pos.y + (basket.y - abandonedPlayer.pos.y) * 0.3
           };
           
-          // SECOND ROTATION: third defender covers rotator's man
+          // SECOND ROTATION
           if (helpCandidates.length > 2) {
             const secondRotator = helpCandidates[2];
             const rotatorAssignment = state.defAssignments.get(rotator.id);
@@ -874,6 +874,23 @@ function handleHelpDefense(state: GameState): void {
               };
             }
           }
+        }
+      }
+    }
+  } else {
+    // Ball handler NOT driving — all defenders RECOVER to their assignments
+    // This prevents defenders from staying in help position after the drive is over
+    for (const def of defTeam) {
+      const assignedId = state.defAssignments.get(def.id);
+      const assigned = offTeam.find(p => p.id === assignedId);
+      if (assigned) {
+        const defDist = dist(def.pos, assigned.pos);
+        // If defender is far from their man (>10ft), they were helping — recover
+        if (defDist > 10) {
+          def.targetPos = {
+            x: assigned.pos.x + (basket.x - assigned.pos.x) * 0.3,
+            y: assigned.pos.y + (basket.y - assigned.pos.y) * 0.3
+          };
         }
       }
     }
@@ -1254,7 +1271,7 @@ function tick(state: GameState): GameState {
     updateDefenseAssignments(state);
     handleScreenDefense(state);
     handleHelpDefense(state);
-    processHelpDefense(state);
+    // NOTE: removed processHelpDefense — was duplicate of handleHelpDefense
   } else if (state.phase === 'inbound' || state.phase === 'advance') {
     // Defense retreats — targets already set, just let them move
     // Only update sliding state
@@ -2074,14 +2091,30 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
   player.pos.x += player.vel.x * dt;
   player.pos.y += player.vel.y * dt;
   
-  // Collision avoidance — repulsion from nearby players
+  // Collision avoidance + screen physics
   for (const other of state.players) {
     if (other === player) continue;
     const dx2 = player.pos.x - other.pos.x;
     const dy2 = player.pos.y - other.pos.y;
     const d2 = Math.sqrt(dx2 * dx2 + dy2 * dy2);
-    if (d2 < 2.5 && d2 > 0.01) {
-      const pushStrength = (2.5 - d2) * 0.3;
+    
+    // Screen physics: when a DEFENDER runs into an offensive SCREENER,
+    // the defender gets physically blocked (strong repulsion + speed kill)
+    if (d2 < 3.5 && d2 > 0.01 && other.isScreening && player.teamIdx !== other.teamIdx) {
+      // Screener's strength vs defender's strength determines how much they're blocked
+      const screenStr = other.player.physical.strength;
+      const defStr = player.player.physical.strength || 70;
+      const blockFactor = 0.5 + (screenStr / 200); // 0.8-1.0 for strong screeners
+      const pushStrength = (3.5 - d2) * blockFactor * 2.0;
+      player.pos.x += (dx2 / d2) * pushStrength * dt;
+      player.pos.y += (dy2 / d2) * pushStrength * dt;
+      // Kill velocity — defender has to re-accelerate after hitting screen
+      player.vel.x *= 0.3;
+      player.vel.y *= 0.3;
+    }
+    // Normal collision avoidance (weaker)
+    else if (d2 < 2.5 && d2 > 0.01) {
+      const pushStrength = (2.5 - d2) * 0.5;
       player.pos.x += (dx2 / d2) * pushStrength * dt;
       player.pos.y += (dy2 / d2) * pushStrength * dt;
     }
