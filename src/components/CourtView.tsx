@@ -1367,10 +1367,18 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
 // Exposes window.__hoopcraft_ticks (tick log) and window.__hoopcraft_analyze()
 // Used by scripts/analyze.mjs (Playwright) for automated game analysis.
 
+interface TickPlayerSnapshot {
+  id: string; name: string; pos: string; x: number; y: number;
+  hasBall: boolean; role?: string; teamIdx: number;
+  vx: number; vy: number; fatigue: number;
+  isCutting: boolean; isScreening: boolean; isDriving: boolean; isDribbling: boolean;
+  catchTimer: number;
+}
 interface TickSnapshot {
   t: number; phase: string; possession: number; shotClock: number;
-  players: { id: string; name: string; pos: string; x: number; y: number; hasBall: boolean; role?: string; teamIdx: number }[];
+  players: TickPlayerSnapshot[];
   event?: string; play?: string;
+  ballX: number; ballY: number; ballInFlight: boolean;
 }
 const _tickLog: TickSnapshot[] = [];
 (window as unknown as Record<string, unknown>).__hoopcraft_ticks = _tickLog;
@@ -1387,9 +1395,17 @@ function tick(state: GameState): GameState {
       players: state.players.map(p => ({
         id: p.id, name: p.player.name, pos: p.player.position,
         x: Math.round(p.pos.x * 10) / 10, y: Math.round(p.pos.y * 10) / 10,
+        vx: Math.round(p.vel.x * 10) / 10, vy: Math.round(p.vel.y * 10) / 10,
         hasBall: p.hasBall, role: p.currentRole, teamIdx: p.teamIdx,
+        fatigue: Math.round(p.fatigue * 100) / 100,
+        isCutting: p.isCutting, isScreening: p.isScreening,
+        isDriving: p.isDriving, isDribbling: p.isDribbling,
+        catchTimer: p.catchTimer,
       })),
       event: state.lastEvent, play: state.currentPlay?.name,
+      ballX: Math.round(state.ball.pos.x * 10) / 10,
+      ballY: Math.round(state.ball.pos.y * 10) / 10,
+      ballInFlight: state.ball.inFlight,
     });
   }
 
