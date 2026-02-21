@@ -371,288 +371,221 @@ function getPossessionStage(shotClock: number): PossessionStage {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 4. PLAYBOOK SYSTEM — Real NBA set plays
+// 4. PLAYBOOK SYSTEM — 25+ Real NBA Set Plays
 // ══════════════════════════════════════════════════════════════════════════
+// Organized by category. Each play defines actions for all 5 roles.
+// Categories: PnR (8), Motion/Passing (5), Post (4), Shooting (4), Transition (4)
 
-// 1. HORNS PnR — Two bigs at elbows, PG picks a side
-// Used by: Warriors, Nuggets, most modern NBA teams
-function createHornsPnR(): Play {
+type PlayDef = { name: string; category: string; steps: PlayStep[] };
+
+function makePlay(name: string, category: string, steps: Array<{
+  dur: number; trigger: 'time' | 'pass' | 'position';
+  bh: RoleAction; sc: RoleAction; cu: RoleAction; sp: RoleAction; pu: RoleAction;
+}>): PlayDef {
   return {
-    name: 'Horns PnR',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'drive', direction: 'right' }],
-        ['screener', { type: 'screen', target: 'ballHandler' }],
-        ['postUp', { type: 'pop', slot: 'SLOT_LEFT_WING' }],  // weak side big pops
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'roll' }],
-        ['postUp', { type: 'callForBall' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-      ])},
-    ]
+    name, category,
+    steps: steps.map((s, i) => ({
+      id: i + 1, duration: s.dur, trigger: s.trigger,
+      actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', s.bh], ['screener', s.sc], ['cutter', s.cu], ['spacer', s.sp], ['postUp', s.pu]
+      ])
+    }))
   };
 }
 
-// 2. FLEX — Continuous screening action, great for ball movement
-// Used by: Classic college play, used at NBA level for catch-and-shoot
-function createFlex(): Play {
-  return {
-    name: 'Flex',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'passTo', target: 'spacer' }],  // swing to right wing
-        ['screener', { type: 'screen', target: 'cutter' }],     // flex screen on baseline
-        ['cutter', { type: 'cut', from: 'SLOT_RIGHT_CORNER', to: 'SLOT_LOW_POST_L' }], // baseline cut
-        ['postUp', { type: 'hold' }],
-        ['spacer', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'pop', slot: 'SLOT_RIGHT_ELBOW' }],  // pop after screen
-        ['cutter', { type: 'callForBall' }],
-        ['postUp', { type: 'relocate' }],
-        ['spacer', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+// ─── PICK & ROLL PLAYS (8) ──────────────────────────────────────────────
 
-// 3. UCLA CUT — PG passes to wing, cuts off high post screen to basket
-// Used by: Lakers (Showtime), many modern teams
-function createUCLACut(): Play {
-  return {
-    name: 'UCLA Cut',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],  // high post
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
-      ])},
-      { id: 2, duration: 1.5, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'passTo', target: 'spacer' }],     // pass to wing
-        ['screener', { type: 'screen', target: 'ballHandler' }],   // screen for PG
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LOW_POST_L' }], // UCLA cut to basket
-        ['screener', { type: 'pop', slot: 'SLOT_TOP_KEY' }],
-        ['spacer', { type: 'readAndReact' }],   // wing now has ball, reads
-        ['cutter', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-      { id: 4, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'callForBall' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'relocate' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+const PLAY_HORNS_PNR = makePlay('Horns PnR', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'right'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'pop',slot:'SLOT_LEFT_WING'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'roll'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'callForBall'} },
+]);
 
-// 4. SPAIN PnR — PnR with a backscreen on the roller's defender
-// Used by: Spain national team, Raptors, modern NBA innovation
-function createSpainPnR(): Play {
-  return {
-    name: 'Spain PnR',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'drive', direction: 'right' }],
-        ['screener', { type: 'screen', target: 'ballHandler' }],
-        ['cutter', { type: 'screen', target: 'screener' }],   // backscreen on roller's defender!
-        ['spacer', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'roll' }],          // rolls free because of backscreen
-        ['cutter', { type: 'pop', slot: 'SLOT_LEFT_WING' }],  // pops to 3pt line
-        ['spacer', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+const PLAY_HORNS_SPLIT = makePlay('Horns Split', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'} },
+  { dur: 1.5, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'callForBall'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 2, trigger: 'time', bh: {type:'cut',from:'SLOT_TOP_KEY',to:'SLOT_LOW_POST_R'}, sc: {type:'readAndReact'}, cu: {type:'hold'}, sp: {type:'relocate'}, pu: {type:'screen',target:'ballHandler'} },
+]);
 
-// 5. FLOPPY — Shooter runs off staggered screens for catch-and-shoot
-// Used by: Warriors (Steph Curry), any team with elite shooters
-function createFloppy(): Play {
-  return {
-    name: 'Floppy',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_LOW_POST_L' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],  // shooter starts at FT line
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'hold' }],
-        ['screener', { type: 'screen', target: 'cutter' }],  // first screen
-        ['postUp', { type: 'screen', target: 'cutter' }],    // staggered second screen
-        ['cutter', { type: 'cut', from: 'SLOT_LEFT_ELBOW', to: 'SLOT_RIGHT_WING' }],  // run off screens
-        ['spacer', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'passTo', target: 'cutter' }],  // feed the shooter
-        ['screener', { type: 'roll' }],
-        ['postUp', { type: 'pop', slot: 'SLOT_RIGHT_ELBOW' }],
-        ['cutter', { type: 'shootIfOpen' }],
-        ['spacer', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+const PLAY_SIDE_PNR = makePlay('Side PnR', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'left'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'relocate'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'roll'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
 
-// 6. PICK AND ROLL (Side) — Classic side PnR
-function createSidePnR(): Play {
-  return {
-    name: 'Side PnR',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'drive', direction: 'left' }],
-        ['screener', { type: 'screen', target: 'ballHandler' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-        ['postUp', { type: 'relocate' }],
-      ])},
-      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'roll' }],
-        ['spacer', { type: 'callForBall' }],
-        ['cutter', { type: 'relocate' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+const PLAY_SPAIN_PNR = makePlay('Spain PnR', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'right'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'screen',target:'screener'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'roll'}, cu: {type:'pop',slot:'SLOT_LEFT_WING'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
 
-// 7. POST UP — Classic post entry
-function createPostUp(): Play {
-  return {
-    name: 'Post Up',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_L' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'entryPass', target: 'postUp' }],
-        ['postUp', { type: 'callForBall' }],
-        ['screener', { type: 'hold' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-      ])},
-      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['postUp', { type: 'readAndReact' }],
-        ['ballHandler', { type: 'relocate' }],
-        ['screener', { type: 'hold' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'relocate' }],
-      ])},
-    ]
-  };
-}
+const PLAY_DRAG_PNR = makePlay('Drag Screen', 'pnr', [
+  { dur: 1.5, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_WING'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'right'}, sc: {type:'roll'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'relocate'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'callForBall'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
 
-// 8. ISO CLEAR — Clear one side for 1-on-1
-function createISO(): Play {
-  return {
-    name: 'ISO Clear',
-    steps: [
-      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-        ['screener', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
-        ['spacer', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
-        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
-        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
-      ])},
-      { id: 2, duration: 4, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['screener', { type: 'hold' }],
-        ['spacer', { type: 'hold' }],
-        ['cutter', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-    ]
-  };
-}
+const PLAY_STEP_UP_PNR = makePlay('Step-Up PnR', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_LOW_POST_L'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'hold'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'drive',direction:'left'}, sc: {type:'roll'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'relocate'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'callForBall'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
 
-// 9. FAST BREAK — Push pace in transition
-function createFastBreak(): Play {
-  return {
-    name: 'Fast Break',
-    steps: [
-      { id: 1, duration: 1.5, trigger: 'position', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'drive', direction: 'baseline' }],
-        ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LEFT_CORNER' }],
-        ['spacer', { type: 'cut', from: 'SLOT_RIGHT_WING', to: 'SLOT_RIGHT_CORNER' }],
-        ['screener', { type: 'hold' }],
-        ['postUp', { type: 'hold' }],
-      ])},
-      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
-        ['ballHandler', { type: 'readAndReact' }],
-        ['cutter', { type: 'callForBall' }],
-        ['spacer', { type: 'callForBall' }],
-        ['screener', { type: 'relocate' }],
-        ['postUp', { type: 'relocate' }],
-      ])},
-    ]
-  };
-}
+const PLAY_DOUBLE_DRAG = makePlay('Double Drag', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'left'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'right'}, sc: {type:'roll'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'screen',target:'ballHandler'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'callForBall'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'roll'} },
+]);
 
-const PLAYBOOK: Play[] = [
-  createHornsPnR(),
-  createFlex(),
-  createUCLACut(),
-  createSpainPnR(),
-  createFloppy(),
-  createSidePnR(),
-  createPostUp(),
-  createISO(),
-  createFastBreak(),
+const PLAY_PICK_AND_POP = makePlay('Pick & Pop', 'pnr', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'left'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'pop',slot:'SLOT_TOP_KEY'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+// ─── MOTION / PASSING PLAYS (5) ────────────────────────────────────────
+
+const PLAY_FLEX = makePlay('Flex', 'motion', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_LOW_POST_R'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, pu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'spacer'}, sc: {type:'screen',target:'cutter'}, cu: {type:'cut',from:'SLOT_RIGHT_CORNER',to:'SLOT_LOW_POST_L'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 2, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'pop',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'relocate'} },
+]);
+
+const PLAY_UCLA_CUT = makePlay('UCLA Cut', 'motion', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 1.5, trigger: 'time', bh: {type:'passTo',target:'spacer'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 2, trigger: 'time', bh: {type:'cut',from:'SLOT_LEFT_WING',to:'SLOT_LOW_POST_L'}, sc: {type:'pop',slot:'SLOT_TOP_KEY'}, cu: {type:'hold'}, sp: {type:'readAndReact'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'callForBall'}, sc: {type:'hold'}, cu: {type:'relocate'}, sp: {type:'readAndReact'}, pu: {type:'hold'} },
+]);
+
+const PLAY_PRINCETON_CHIN = makePlay('Princeton Chin', 'motion', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'callForBall'}, cu: {type:'cut',from:'SLOT_LEFT_CORNER',to:'SLOT_LOW_POST_L'}, sp: {type:'hold'}, pu: {type:'screen',target:'cutter'} },
+  { dur: 2, trigger: 'time', bh: {type:'cut',from:'SLOT_TOP_KEY',to:'SLOT_RIGHT_CORNER'}, sc: {type:'readAndReact'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'pop',slot:'SLOT_TOP_KEY'} },
+]);
+
+const PLAY_SWING = makePlay('Swing Offense', 'motion', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'cutter'}, sc: {type:'hold'}, cu: {type:'hold'}, sp: {type:'cut',from:'SLOT_LEFT_CORNER',to:'SLOT_LEFT_WING'}, pu: {type:'hold'} },
+  { dur: 2, trigger: 'time', bh: {type:'cut',from:'SLOT_TOP_KEY',to:'SLOT_LEFT_ELBOW'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'passTo',target:'spacer'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'callForBall'}, sc: {type:'roll'}, cu: {type:'hold'}, sp: {type:'readAndReact'}, pu: {type:'relocate'} },
+]);
+
+const PLAY_TRIANGLE = makePlay('Triangle', 'motion', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_LOW_POST_L'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, pu: {type:'moveTo',slot:'SLOT_TOP_KEY'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'postUp'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'cut',from:'SLOT_LEFT_WING',to:'SLOT_RIGHT_CORNER'}, sc: {type:'readAndReact'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+// ─── POST PLAYS (4) ────────────────────────────────────────────────────
+
+const PLAY_POST_UP = makePlay('Post Up', 'post', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_TOP_KEY'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_L'} },
+  { dur: 2, trigger: 'time', bh: {type:'entryPass',target:'postUp'}, sc: {type:'hold'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'callForBall'} },
+  { dur: 3, trigger: 'time', bh: {type:'relocate'}, sc: {type:'hold'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'readAndReact'} },
+]);
+
+const PLAY_HIGH_LOW = makePlay('High-Low', 'post', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'callForBall'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'callForBall'} },
+  { dur: 3, trigger: 'time', bh: {type:'relocate'}, sc: {type:'entryPass',target:'postUp'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'readAndReact'} },
+]);
+
+const PLAY_POST_SPLIT = makePlay('Post Split', 'post', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_TOP_KEY'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_L'} },
+  { dur: 2, trigger: 'time', bh: {type:'entryPass',target:'postUp'}, sc: {type:'hold'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'callForBall'} },
+  { dur: 2, trigger: 'time', bh: {type:'cut',from:'SLOT_LEFT_WING',to:'SLOT_LOW_POST_R'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'readAndReact'} },
+]);
+
+const PLAY_ELBOW_POST = makePlay('Elbow Post', 'post', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'callForBall'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'cut',from:'SLOT_RIGHT_WING',to:'SLOT_LOW_POST_R'}, sc: {type:'readAndReact'}, cu: {type:'relocate'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+// ─── SHOOTING PLAYS (4) ────────────────────────────────────────────────
+
+const PLAY_FLOPPY = makePlay('Floppy', 'shooting', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_LOW_POST_L'}, cu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 2, trigger: 'time', bh: {type:'hold'}, sc: {type:'screen',target:'cutter'}, cu: {type:'cut',from:'SLOT_LEFT_ELBOW',to:'SLOT_RIGHT_WING'}, sp: {type:'hold'}, pu: {type:'screen',target:'cutter'} },
+  { dur: 3, trigger: 'time', bh: {type:'passTo',target:'cutter'}, sc: {type:'roll'}, cu: {type:'shootIfOpen'}, sp: {type:'hold'}, pu: {type:'pop',slot:'SLOT_RIGHT_ELBOW'} },
+]);
+
+const PLAY_HAMMER = makePlay('Hammer', 'shooting', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'left'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'screen',target:'spacer'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'roll'}, cu: {type:'relocate'}, sp: {type:'callForBall'}, pu: {type:'hold'} },
+]);
+
+const PLAY_IVERSON_CUT = makePlay('Iverson Cut', 'shooting', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sp: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'hold'}, sc: {type:'screen',target:'cutter'}, cu: {type:'cut',from:'SLOT_TOP_KEY',to:'SLOT_RIGHT_WING'}, sp: {type:'hold'}, pu: {type:'screen',target:'cutter'} },
+  { dur: 3, trigger: 'time', bh: {type:'passTo',target:'cutter'}, sc: {type:'pop',slot:'SLOT_LEFT_WING'}, cu: {type:'shootIfOpen'}, sp: {type:'relocate'}, pu: {type:'hold'} },
+]);
+
+const PLAY_STAGGER_SCREEN = makePlay('Stagger Screen', 'shooting', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LOW_POST_R'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'} },
+  { dur: 2, trigger: 'time', bh: {type:'hold'}, sc: {type:'screen',target:'spacer'}, cu: {type:'hold'}, sp: {type:'cut',from:'SLOT_RIGHT_CORNER',to:'SLOT_LEFT_WING'}, pu: {type:'screen',target:'spacer'} },
+  { dur: 3, trigger: 'time', bh: {type:'passTo',target:'spacer'}, sc: {type:'roll'}, cu: {type:'relocate'}, sp: {type:'shootIfOpen'}, pu: {type:'pop',slot:'SLOT_TOP_KEY'} },
+]);
+
+// ─── TRANSITION PLAYS (4) ──────────────────────────────────────────────
+
+const PLAY_FAST_BREAK = makePlay('Fast Break', 'transition', [
+  { dur: 1.5, trigger: 'time', bh: {type:'drive',direction:'baseline'}, sc: {type:'relocate'}, cu: {type:'cut',from:'SLOT_LEFT_WING',to:'SLOT_LEFT_CORNER'}, sp: {type:'cut',from:'SLOT_RIGHT_WING',to:'SLOT_RIGHT_CORNER'}, pu: {type:'relocate'} },
+  { dur: 2, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'relocate'}, cu: {type:'callForBall'}, sp: {type:'callForBall'}, pu: {type:'relocate'} },
+]);
+
+const PLAY_SECONDARY_BREAK = makePlay('Secondary Break', 'transition', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_TOP_KEY'}, sc: {type:'moveTo',slot:'SLOT_RIGHT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_WING'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'drive',direction:'right'}, sc: {type:'screen',target:'ballHandler'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'roll'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'relocate'} },
+]);
+
+const PLAY_EARLY_OFFENSE = makePlay('Early Offense', 'transition', [
+  { dur: 1.5, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_RIGHT_CORNER'}, pu: {type:'moveTo',slot:'SLOT_LOW_POST_R'} },
+  { dur: 2, trigger: 'time', bh: {type:'passTo',target:'screener'}, sc: {type:'callForBall'}, cu: {type:'cut',from:'SLOT_LEFT_CORNER',to:'SLOT_LOW_POST_L'}, sp: {type:'hold'}, pu: {type:'hold'} },
+  { dur: 3, trigger: 'time', bh: {type:'cut',from:'SLOT_RIGHT_WING',to:'SLOT_RIGHT_ELBOW'}, sc: {type:'readAndReact'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+const PLAY_CHERRY_PICK = makePlay('Cherry Pick', 'transition', [
+  { dur: 1, trigger: 'time', bh: {type:'drive',direction:'baseline'}, sc: {type:'relocate'}, cu: {type:'cut',from:'SLOT_LEFT_WING',to:'SLOT_LOW_POST_L'}, sp: {type:'relocate'}, pu: {type:'relocate'} },
+  { dur: 2, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'hold'}, cu: {type:'callForBall'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+// ─── ISO PLAYS (2) ─────────────────────────────────────────────────────
+
+const PLAY_ISO = makePlay('ISO Clear', 'iso', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, cu: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, sp: {type:'moveTo',slot:'SLOT_LEFT_WING'}, pu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'} },
+  { dur: 4, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'hold'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+const PLAY_ISO_SCREEN_AWAY = makePlay('ISO Screen Away', 'iso', [
+  { dur: 2, trigger: 'time', bh: {type:'moveTo',slot:'SLOT_RIGHT_WING'}, sc: {type:'moveTo',slot:'SLOT_LEFT_ELBOW'}, cu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'}, sp: {type:'moveTo',slot:'SLOT_LEFT_WING'}, pu: {type:'moveTo',slot:'SLOT_LEFT_CORNER'} },
+  { dur: 2, trigger: 'time', bh: {type:'hold'}, sc: {type:'screen',target:'cutter'}, cu: {type:'cut',from:'SLOT_LEFT_CORNER',to:'SLOT_LEFT_WING'}, sp: {type:'relocate'}, pu: {type:'hold'} },
+  { dur: 4, trigger: 'time', bh: {type:'readAndReact'}, sc: {type:'pop',slot:'SLOT_TOP_KEY'}, cu: {type:'hold'}, sp: {type:'hold'}, pu: {type:'hold'} },
+]);
+
+// ─── MASTER PLAYBOOK ───────────────────────────────────────────────────
+
+const PLAYBOOK: PlayDef[] = [
+  // PnR (8)
+  PLAY_HORNS_PNR, PLAY_HORNS_SPLIT, PLAY_SIDE_PNR, PLAY_SPAIN_PNR,
+  PLAY_DRAG_PNR, PLAY_STEP_UP_PNR, PLAY_DOUBLE_DRAG, PLAY_PICK_AND_POP,
+  // Motion (5)
+  PLAY_FLEX, PLAY_UCLA_CUT, PLAY_PRINCETON_CHIN, PLAY_SWING, PLAY_TRIANGLE,
+  // Post (4)
+  PLAY_POST_UP, PLAY_HIGH_LOW, PLAY_POST_SPLIT, PLAY_ELBOW_POST,
+  // Shooting (4)
+  PLAY_FLOPPY, PLAY_HAMMER, PLAY_IVERSON_CUT, PLAY_STAGGER_SCREEN,
+  // Transition (4)
+  PLAY_FAST_BREAK, PLAY_SECONDARY_BREAK, PLAY_EARLY_OFFENSE, PLAY_CHERRY_PICK,
+  // ISO (2)
+  PLAY_ISO, PLAY_ISO_SCREEN_AWAY,
 ];
+
 
 // ══════════════════════════════════════════════════════════════════════════
 // 5. ROLE ASSIGNMENT SYSTEM
@@ -1011,8 +944,8 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // Exception: immediate reactions (layup range, wide open catch-and-shoot)
   const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
-  // 1. Layup/dunk range — always finish immediately
-  if (distToBasket < 5) {
+  // 1. At the rim — always finish (layup/dunk)
+  if (distToBasket < 8) {
     attemptShot(state, handler, basketPos);
     return;
   }
@@ -1064,18 +997,15 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   const mustAttack = holdTime > 3 || state.shotClock < 6;
   
   // 3a. DRIVE when lane is open — layup/dunk is best shot in basketball
-  if (laneClear && distToBasket > 5 && distToBasket < 28) {
-    const dir = state.possession === 0 ? 1 : -1;
-    handler.targetPos = {
-      x: basketPos.x - dir * 1,
-      y: basketPos.y + (state.rng() > 0.5 ? 2 : -2),
-    };
+  if (laneClear && distToBasket > 8 && distToBasket < 28) {
+    // Drive straight at the rim
+    handler.targetPos = { ...basketPos };
     handler.isCutting = true;
     return;
   }
   
-  // 3b. Open mid-range — take it if aggressive
-  if (isOpen && distToBasket < 22 && distToBasket > 5 && (aggressive || mustAttack)) {
+  // 3b. Open mid-range — take it if aggressive (and can't drive)
+  if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
     attemptShot(state, handler, basketPos);
     return;
   }
@@ -1531,7 +1461,7 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       state.phaseTicks = 0;
       state.advanceClock = 0;
       // Auto-select fast break play
-      state.currentPlay = PLAYBOOK.find(p => p.name === 'Fast Break') || null;
+      state.currentPlay = PLAY_FAST_BREAK;
       state.currentStep = 0;
       state.stepTimer = 0;
       state.lastEvent = `Fast break! ${handler.player.name} pushes the pace!`;
@@ -1715,21 +1645,32 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Stage 2: Box out + crash boards (~1.5s)
   if (state.phaseTicks < 90) {
-    // DEFENDERS: box out — get between their man and the rebound spot
+    // DEFENDERS: box out — back into offensive player, seal them off
     for (let i = 0; i < defTeam.length; i++) {
       const def = defTeam[i];
       const matchup = offTeam[i] || offTeam[0];
       
-      const mx = matchup.pos.x, my = matchup.pos.y;
-      const rx = reboundPos.x, ry = reboundPos.y;
-      const toRebX = rx - mx, toRebY = ry - my;
-      const toRebD = Math.sqrt(toRebX * toRebX + toRebY * toRebY) || 1;
+      // Move TOWARD the rebound spot but stay between matchup and ball
+      // First 0.5s: find matchup. After: push them away from ball
+      const phase = state.phaseTicks < 30 ? 'find' : 'seal';
       
-      // Box out: stand between matchup and rebound
-      def.targetPos = {
-        x: mx + (toRebX / toRebD) * 2,
-        y: my + (toRebY / toRebD) * 2
-      };
+      if (phase === 'find') {
+        // Move to matchup position (between them and rebound)
+        const mx = matchup.pos.x, my = matchup.pos.y;
+        const rx = reboundPos.x, ry = reboundPos.y;
+        const toRebX = rx - mx, toRebY = ry - my;
+        const toRebD = Math.sqrt(toRebX * toRebX + toRebY * toRebY) || 1;
+        def.targetPos = {
+          x: mx + (toRebX / toRebD) * 3,
+          y: my + (toRebY / toRebD) * 3
+        };
+      } else {
+        // Seal: back into matchup and move toward rebound
+        def.targetPos = {
+          x: reboundPos.x + (def.courtIdx - 2) * 3,
+          y: reboundPos.y + (def.courtIdx % 2 === 0 ? -3 : 3)
+        };
+      }
     }
     
     // OFFENSIVE players: bigs crash, guards get back
@@ -2205,7 +2146,7 @@ function updateBallFlight(state: GameState, dt: number): void {
           
           const scoringTeam = state.possession;
           state.score[scoringTeam] += pts;
-          const scoreType = pts === 3 ? '3-pointer' : shotDistance < 5 ? 'layup' : `${pts}pts`;
+          const scoreType = pts === 3 ? '3-pointer' : shotDistance < 3 ? 'at the rim' : shotDistance < 8 ? 'layup' : `${pts}pts`;
           state.lastEvent = `${shooterName} scores! ${scoreType} (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
@@ -2313,36 +2254,51 @@ function assignInitialSlots(state: GameState, offTeam: SimPlayer[], slots: Map<S
   }
 }
 
+// Track recently used plays to ensure variety
+let recentPlays: string[] = [];
+
 function selectPlay(state: GameState, offTeam: SimPlayer[]): void {
   const tactic = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
   const rng = state.rng;
   
-  // Tactic-specific play selection with variety
-  let candidates: string[];
+  // Filter plays by tactic category preference
+  let categoryWeights: Record<string, number>;
   
   switch (tactic) {
     case 'fast_break':
-      candidates = ['Fast Break'];
+      categoryWeights = { transition: 5, pnr: 2, motion: 1, shooting: 1, post: 0, iso: 0 };
       break;
     case 'iso':
-      candidates = ['ISO Clear'];
+      categoryWeights = { iso: 5, pnr: 2, shooting: 1, motion: 1, post: 0, transition: 1 };
       break;
     case 'inside':
-      candidates = ['Post Up', 'Horns PnR'];
+      categoryWeights = { post: 5, pnr: 3, motion: 2, shooting: 1, iso: 0, transition: 1 };
       break;
     case 'shoot':
-      // Shooting teams favor plays that generate open 3s
-      candidates = ['Floppy', 'Horns PnR', 'Flex', 'Spain PnR'];
+      categoryWeights = { shooting: 5, pnr: 3, motion: 2, post: 1, iso: 1, transition: 1 };
       break;
     case 'motion':
     default:
-      // Balanced selection — variety is key
-      candidates = ['Horns PnR', 'Side PnR', 'UCLA Cut', 'Flex', 'Spain PnR', 'Floppy'];
+      categoryWeights = { pnr: 3, motion: 3, shooting: 2, post: 2, iso: 1, transition: 1 };
       break;
   }
   
-  const playName = candidates[Math.floor(rng() * candidates.length)];
-  const selectedPlay = PLAYBOOK.find(p => p.name === playName) || PLAYBOOK[0];
+  // Build weighted candidate list, excluding recently used
+  const candidates: PlayDef[] = [];
+  for (const play of PLAYBOOK) {
+    if (recentPlays.includes(play.name)) continue; // avoid repeats
+    if (play.category === 'transition') continue; // transition only via fast break detection
+    const weight = categoryWeights[play.category] || 1;
+    for (let i = 0; i < weight; i++) candidates.push(play);
+  }
+  
+  // Fallback: if all filtered out, use any non-transition play
+  const pool = candidates.length > 0 ? candidates : PLAYBOOK.filter(p => p.category !== 'transition');
+  const selectedPlay = pool[Math.floor(rng() * pool.length)];
+  
+  // Track recent plays (keep last 4 to avoid repeating)
+  recentPlays.push(selectedPlay.name);
+  if (recentPlays.length > 4) recentPlays.shift();
   
   state.currentPlay = selectedPlay;
   state.currentStep = 0;
@@ -2353,20 +2309,45 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   const shooterName = shooter.player.name;
   const distToBasket = dist(shooter.pos, basket);
   
+  // Determine shot type and skill used
   let shotSkill: number;
+  let basePct: number;
+  let isDunk = false;
+  
   if (distToBasket > 22) {
+    // 3-pointer
     shotSkill = shooter.player.skills.shooting.three_point;
-  } else if (distToBasket > 10) {
+    basePct = 0.33; // NBA avg ~36%, base before skill modifier
+  } else if (distToBasket > 14) {
+    // Long mid-range
     shotSkill = shooter.player.skills.shooting.mid_range;
-  } else {
+    basePct = 0.42;
+  } else if (distToBasket > 8) {
+    // Short mid-range / floater
+    shotSkill = Math.max(shooter.player.skills.shooting.mid_range, shooter.player.skills.finishing.layup);
+    basePct = 0.48;
+  } else if (distToBasket > 3) {
+    // Close range — layup/runner territory
     shotSkill = shooter.player.skills.finishing.layup;
+    basePct = 0.62;
+  } else {
+    // At the rim — layup or dunk
+    const dunkSkill = shooter.player.skills.finishing.dunk;
+    const layupSkill = shooter.player.skills.finishing.layup;
+    // Dunk if athletic enough and close enough
+    if (dunkSkill >= 70 && distToBasket < 2.5) {
+      isDunk = true;
+      shotSkill = dunkSkill;
+      basePct = 0.78; // dunks are very high percentage
+    } else {
+      shotSkill = layupSkill;
+      basePct = 0.72; // point-blank layup
+    }
   }
 
   const tacticO = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
   const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
   const advantage = getTacticAdvantage(tacticO, tacticD);
-  
-  let basePct = distToBasket > 22 ? 0.35 : distToBasket > 10 ? 0.45 : 0.60;
   
   // Contest factor
   const nearestDef = findNearestDefender(shooter, state);
@@ -2451,7 +2432,7 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   (state.ball as any).shooterPossession = state.possession;
   
   const contestStr = contestDistance < 3 ? ' (contested)' : contestDistance < 6 ? '' : ' (open)';
-  const shotType = distToBasket > 22 ? '3PT' : distToBasket > 10 ? 'mid-range' : distToBasket > 5 ? 'floater' : 'layup';
+  const shotType = isDunk ? 'DUNK' : distToBasket > 22 ? '3PT' : distToBasket > 14 ? 'mid-range' : distToBasket > 8 ? 'floater' : 'layup';
   const playContext = state.currentPlay ? `[${state.currentPlay.name}] ` : '';
   
   clearBallCarrier(state);
