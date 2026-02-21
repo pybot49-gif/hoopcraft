@@ -98,6 +98,8 @@ interface SimPlayer {
   isDriving: boolean;         // committed to driving to basket — don't reconsider
   catchTimer: number;         // seconds until player can act after catching (0 = ready)
   sprintTimer: number;        // seconds sprinting (affects speed decay)
+  jumpZ: number;              // current height off ground in feet (0 = standing)
+  jumpVelZ: number;           // vertical velocity
 }
 
 type MissType = 'rim_out' | 'back_iron' | 'airball' | 'blocked' | 'front_rim' | null;
@@ -166,6 +168,8 @@ interface GameState {
   playCompleted: boolean;  // has the primary play finished?
   freeThrows: { shooter: SimPlayer; made: number; total: number; andOne: boolean } | null;
   hasFastBroken: boolean;  // has this possession already triggered a fast break?
+  passCount: number;       // passes this possession
+  deadBallTimer: number;   // pause after made baskets before inbound
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1062,10 +1066,32 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // Exception: immediate reactions (layup range, wide open catch-and-shoot)
   const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
+  const mustAttack = holdTime > 3 || state.shotClock < 6;
+  const passFirst = holdTime < 1.5 && !mustAttack;
+  
+  // Pass penalty: reduce shot probability when no passes made yet
+  const noPasses = state.passCount === 0;
+  
+  // Lane clear requires defender >6ft away AND not between handler and basket
+  const defAhead = findNearestDefender(handler, state);
+  const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
+  const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
+  const laneClear = defDist > 6 && !defBetween;
+  
   // 0. COMMITTED DRIVE — once driving, keep going until at rim or completely stopped
   if (handler.isDriving) {
     if (distToBasket < 6) {
-      // Arrived at rim — finish!
+      // At rim — but check for kick-out to open perimeter shooter first
+      const openPerimeter = openTeammates.find(p => {
+        const d = dist(p.pos, basketPos);
+        return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
+      });
+      if (openPerimeter && state.rng() < 0.35) {
+        handler.isDriving = false;
+        passBall(state, handler, openPerimeter);
+        return;
+      }
+      // Finish at rim
       handler.isDriving = false;
       attemptShot(state, handler, basketPos);
       return;
@@ -1083,18 +1109,18 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   }
   
   // SUPERSTAR TENDENCIES — signature plays
-  if (handler.player.isSuperstar) {
+  if (handler.player.isSuperstar && !passFirst) {
     const skills = handler.player.skills;
     // Sharpshooter superstar: pull-up 3 more aggressively
-    if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen) {
+    if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen && !noPasses) {
       attemptShot(state, handler, basketPos);
       return;
     }
     // Athletic freak superstar: attack basket relentlessly
     if (skills.finishing.dunk >= 90 && distToBasket < 20) {
-      const defAhead = findNearestDefender(handler, state);
-      const laneClear = !defAhead || dist(defAhead.pos, handler.pos) > 3;
-      if (laneClear) {
+      const sDefAhead = findNearestDefender(handler, state);
+      const sLaneClear = !sDefAhead || dist(sDefAhead.pos, handler.pos) > 6;
+      if (sLaneClear) {
         const sDir = state.possession === 0 ? 1 : -1;
         handler.targetPos = { x: basketPos.x - sDir * 1, y: basketPos.y };
         handler.isCutting = true;
@@ -1105,14 +1131,30 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   // 2. Wide open catch-and-shoot — react immediately (no decision tick needed)
   //    BUT only if you're actually a shooter! Non-shooters should pass or drive.
+  //    Extra pass: if just caught and another teammate is MORE open, pass 40% of the time
   if (isWideOpen && holdTime < 0.5 && distToBasket > 22 && distToBasket < 27) {
+    // Extra pass check: is another teammate even more open or closer to basket?
+    const moreOpenTeammate = openTeammates.find(p => {
+      const pDef = findNearestDefender(p, state);
+      const pOpen = pDef ? dist(pDef.pos, p.pos) : 15;
+      const myDef = findNearestDefender(handler, state);
+      const myOpen = myDef ? dist(myDef.pos, handler.pos) : 15;
+      return pOpen > myOpen + 2 || dist(p.pos, basketPos) < distToBasket - 5;
+    });
+    if (moreOpenTeammate && state.rng() < 0.4) {
+      passBall(state, handler, moreOpenTeammate);
+      return;
+    }
+    
     const catchShoot = handler.player.skills.shooting.catch_and_shoot;
     const three = handler.player.skills.shooting.three_point;
     const bestShootingSkill = Math.max(catchShoot, three);
     // Good shooters (≥75) shoot immediately. Decent (65-74) sometimes. Bad (<65) never from 3.
     if (bestShootingSkill >= 75 || (bestShootingSkill >= 65 && state.rng() < 0.3)) {
-      attemptShot(state, handler, basketPos);
-      return;
+      if (!noPasses || state.rng() < 0.3) { // penalize iso no-pass shots
+        attemptShot(state, handler, basketPos);
+        return;
+      }
     }
     // Non-shooter wide open? Drive or pass instead (fall through to decision tree)
   }
@@ -1120,69 +1162,23 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // For all other decisions, only evaluate every ~0.5s (not every tick)
   if (!isDecisionTick) return;
   
-  // 3. Read the defense and decide
-  const defAhead = findNearestDefender(handler, state);
-  const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
-  const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
-  const laneClear = defDist > 4 || !defBetween;
-  
-  // Aggression increases the longer you hold the ball (triple threat → attack)
-  // 0-1s: patient, look to pass if good option
-  // 1-2s: look to drive or shoot
-  // 2s+: must attack, no more passing
-  const aggressive = holdTime > 1.5;
-  const mustAttack = holdTime > 3 || state.shotClock < 6;
-  
-  // 3a. DRIVE when lane is open — layup/dunk is best shot in basketball
-  if (laneClear && distToBasket > 8 && distToBasket < 28) {
-    // Commit to drive — won't reconsider until reaching basket
-    handler.targetPos = { ...basketPos };
-    handler.isCutting = true;
-    handler.isDriving = true;
-    return;
-  }
-  
-  // 3b. Open mid-range — take it if aggressive (and can't drive)
-  if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
-    attemptShot(state, handler, basketPos);
-    return;
-  }
-  
-  // 3c. Open 3 — only take if you can actually shoot
-  if (isOpen && distToBasket > 22 && distToBasket < 27) {
-    const three = handler.player.skills.shooting.three_point;
-    // Good shooters take open 3s. Non-shooters only when desperate.
-    if (three >= 70 || (three >= 65 && aggressive) || mustAttack) {
-      attemptShot(state, handler, basketPos);
+  // === PASS-FIRST SECTION: When holding < 1.5s and not desperate, look to pass 70% of the time ===
+  if (passFirst && openTeammates.length > 0 && state.rng() < 0.7) {
+    // SUPERSTAR TARGETING — feed the star!
+    const superstar = openTeammates.find(p => p.player.isSuperstar);
+    if (superstar && state.rng() < 0.5) {
+      passBall(state, handler, superstar);
       return;
     }
-    // Non-shooter open at 3pt line → drive instead if lane is clear
-    if (three < 65 && laneClear) {
-      handler.targetPos = { ...basketPos };
-      handler.isCutting = true;
-      handler.isDriving = true;
+    
+    // Open 3pt shooter
+    const openThreeShooter = openTeammates.find(p => {
+      const d = dist(p.pos, basketPos);
+      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
+    });
+    if (openThreeShooter) {
+      passBall(state, handler, openThreeShooter);
       return;
-    }
-  }
-  
-  // 3d. ALLEY-OOP — if a teammate is cutting to the rim and we can lob it
-  if (!mustAttack && handler.player.skills.playmaking.lob_pass >= 65) {
-    const oopTarget = findAlleyOopTarget(state, handler, basketPos);
-    if (oopTarget && state.rng() < 0.6) { // 60% chance to attempt when opportunity exists
-      throwAlleyOop(state, handler, oopTarget, basketPos);
-      return;
-    }
-  }
-  
-  // 4. Pass to create a better shot (but only if not holding too long)
-  if (!mustAttack) {
-    // SUPERSTAR TARGETING — feed the star! (~40% chance to look for superstar first)
-    if (state.rng() < 0.4) {
-      const superstar = openTeammates.find(p => p.player.isSuperstar);
-      if (superstar) {
-        passBall(state, handler, superstar);
-        return;
-      }
     }
     
     // Roller cutting to basket
@@ -1192,27 +1188,106 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
       return;
     }
     
-    // Open 3pt shooter
+    // Swing pass to best-positioned teammate
+    if (openTeammates.length > 0) {
+      const bestTarget = openTeammates.sort((a, b) => {
+        const aDef = findNearestDefender(a, state);
+        const bDef = findNearestDefender(b, state);
+        const aOpen = aDef ? dist(aDef.pos, a.pos) : 15;
+        const bOpen = bDef ? dist(bDef.pos, b.pos) : 15;
+        return bOpen - aOpen; // most open first
+      })[0];
+      passBall(state, handler, bestTarget);
+      return;
+    }
+  }
+  
+  // 3d. ALLEY-OOP — if a teammate is cutting to the rim and we can lob it
+  if (!mustAttack && handler.player.skills.playmaking.lob_pass >= 65) {
+    const oopTarget = findAlleyOopTarget(state, handler, basketPos);
+    if (oopTarget && state.rng() < 0.6) {
+      throwAlleyOop(state, handler, oopTarget, basketPos);
+      return;
+    }
+  }
+  
+  // 3. Read the defense and decide — PASSING before driving when passFirst
+  const aggressive = holdTime > 1.5;
+  
+  // Pass to create a better shot
+  if (!mustAttack && !aggressive) {
+    if (state.rng() < 0.4) {
+      const superstar = openTeammates.find(p => p.player.isSuperstar);
+      if (superstar) {
+        passBall(state, handler, superstar);
+        return;
+      }
+    }
+    
+    const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
+    if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
+      passBall(state, handler, roller);
+      return;
+    }
+    
     const openThreeShooter = openTeammates.find(p => {
       const d = dist(p.pos, basketPos);
-      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 70;
+      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
     });
     if (openThreeShooter) {
       passBall(state, handler, openThreeShooter);
       return;
     }
     
-    // Swing pass (only in first ~1.5s of holding ball)
-    if (!aggressive && openTeammates.length > 0) {
+    if (openTeammates.length > 0 && state.rng() < 0.4) {
       const closest = openTeammates.sort((a, b) => dist(a.pos, handler.pos) - dist(b.pos, handler.pos));
       passBall(state, handler, closest[0]);
       return;
     }
   }
   
+  // 3a. DRIVE when lane is ACTUALLY clear
+  if (laneClear && distToBasket > 8 && distToBasket < 28) {
+    handler.targetPos = { ...basketPos };
+    handler.isCutting = true;
+    handler.isDriving = true;
+    return;
+  }
+  
+  // 3b. Open mid-range — take it if aggressive (and can't drive)
+  if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
+    if (!noPasses || state.rng() < 0.4) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+  }
+  
+  // 3c. Open 3 — only take if you can actually shoot
+  if (isOpen && distToBasket > 22 && distToBasket < 27) {
+    const three = handler.player.skills.shooting.three_point;
+    if (three >= 70 || (three >= 65 && aggressive) || mustAttack) {
+      if (!noPasses || state.rng() < 0.4) {
+        attemptShot(state, handler, basketPos);
+        return;
+      }
+    }
+    if (three < 65 && laneClear) {
+      handler.targetPos = { ...basketPos };
+      handler.isCutting = true;
+      handler.isDriving = true;
+      return;
+    }
+  }
+  
   // 5. Must score — take whatever shot
-  if (distToBasket < 25) {
+  if (mustAttack && distToBasket < 25) {
     attemptShot(state, handler, basketPos);
+    return;
+  }
+  
+  // Last resort: pass if anyone is open
+  if (openTeammates.length > 0) {
+    passBall(state, handler, openTeammates[0]);
     return;
   }
   
@@ -1344,6 +1419,12 @@ function tick(state: GameState): GameState {
       state.running = false;
       return state;
     }
+  }
+
+  // Dead ball pause (after made baskets)
+  if (state.deadBallTimer > 0) {
+    state.deadBallTimer -= dt;
+    return state;
   }
 
   // Sync safety: ensure hasBall and carrier are consistent
@@ -1502,12 +1583,18 @@ function tick(state: GameState): GameState {
       p.isScreening = false;
     }
     if (!p.hasBall) { p.isDribbling = false; p.isDriving = false; }
+    // Jump physics (gravity)
+    if (p.jumpZ > 0 || p.jumpVelZ > 0) {
+      p.jumpVelZ -= 32 * dt;
+      p.jumpZ += p.jumpVelZ * dt;
+      if (p.jumpZ < 0) { p.jumpZ = 0; p.jumpVelZ = 0; }
+    }
   }
 
-  // Ball follows carrier
+  // Ball follows carrier (including jump height)
   if (state.ball.carrier && !state.ball.inFlight && !state.ball.bouncing) {
     state.ball.pos = { ...state.ball.carrier.pos };
-    state.ball.z = 4; // dribble height
+    state.ball.z = 4 + (state.ball.carrier.jumpZ || 0); // dribble height + jump
   }
 
   return state;
@@ -1801,6 +1888,8 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     case 'desperation':
       attemptShot(state, handler, basketPos);
       break;
+    default:
+      break;
   }
   
   // Steal attempts — check once per ~5 seconds (every 300 ticks)
@@ -1979,6 +2068,14 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       
     let rebounder = competitors[0];
     let bestValue = -1;
+    
+    // Competitors jump for the rebound
+    for (const p of competitors) {
+      if (p.jumpZ === 0 && p.jumpVelZ === 0) {
+        const vert = p.player.physical.vertical || 70;
+        p.jumpVelZ = (vert / 100) * 12 + 4;
+      }
+    }
     
     for (const p of competitors) {
       const rebSkill = p.player.skills.athletic.rebounding;
@@ -2335,6 +2432,10 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
     baseSpeed *= 0.55 + (handling / 100) * 0.2; // range: 0.55 (bad handler) to 0.75 (elite)
   }
   if (player.catchTimer > 0) baseSpeed *= 0.3;       // catching the ball — nearly stationary
+  // Transition defense: defenders sprint back after made baskets
+  if ((state.phase === 'inbound' || state.phase === 'advance') && player.teamIdx !== state.possession) {
+    baseSpeed *= 1.3;
+  }
   
   // Being tightly guarded slows you down (body contact, can't get a clean step)
   if (player.hasBall && state.phase === 'action') {
@@ -2741,6 +2842,16 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   const finalPct = basePct * skillModifier(shotSkill) * contestModifier * (1 + advantage);
   const willScore = state.rng() < finalPct;
 
+  // Jump on shot
+  const vertical = shooter.player.physical.vertical || 70;
+  if (isDunk) {
+    shooter.jumpZ = 0;
+    shooter.jumpVelZ = 18;
+  } else {
+    shooter.jumpZ = 0;
+    shooter.jumpVelZ = (vertical / 100) * 14 + 6;
+  }
+
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...shooter.pos };
   state.ball.flightTo = { ...basket };
@@ -2922,6 +3033,10 @@ function throwAlleyOop(state: GameState, passer: SimPlayer, target: SimPlayer, b
   // Lob pass: very high arc targeting above the rim
   const passDist = dist(passer.pos, basketPos);
   
+  // Alley-oop receiver jumps high
+  target.jumpZ = 0;
+  target.jumpVelZ = 20;
+
   state.ball.inFlight = true;
   state.ball.flightFrom = { ...passer.pos };
   state.ball.flightTo = { ...basketPos }; // lob goes to the BASKET, not the player
@@ -3010,6 +3125,7 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   state.lastPassFrom = from.id;
   state.lastPassTime = state.gameTime;
   state.dribbleTime = 0; // reset — new handler starts fresh
+  state.passCount++;
   state.lastEvent = `${from.player.name} ${passType} pass to ${to.player.name}`;
 }
 
@@ -3019,6 +3135,7 @@ function changePossession(state: GameState, event: string): void {
   state.phaseTicks = 0;
   state.shotClock = 24;
   state.currentPlay = null;
+  state.deadBallTimer = 0.5; // brief pause before inbound
   
   resetPossession(state);
   if (event) state.lastEvent = event;
@@ -3037,6 +3154,7 @@ function resetPossession(state: GameState): void {
   state.possessionStage = 'early';
   state.playCompleted = false;
   state.hasFastBroken = false;
+  state.passCount = 0;
   
   // Reset player states
   state.players.forEach(p => {
@@ -3106,6 +3224,8 @@ function initGameState(): GameState {
         isDriving: false,
         catchTimer: 0,
         sprintTimer: 0,
+        jumpZ: 0,
+        jumpVelZ: 0,
       });
     });
   };
@@ -3174,6 +3294,8 @@ function initGameState(): GameState {
     playCompleted: false,
     hasFastBroken: false,
     freeThrows: null,
+    passCount: 0,
+    deadBallTimer: 0,
   };
 }
 
@@ -3209,6 +3331,16 @@ function drawCourt(ctx: CanvasRenderingContext2D) {
   ctx.arc(HALF_X * s, BASKET_Y * s, CENTER_CIRCLE_R * s, 0, Math.PI * 2);
   ctx.stroke();
 
+  // Baselines
+  ctx.beginPath();
+  ctx.moveTo(0, 0);
+  ctx.lineTo(0, CANVAS_H);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(CANVAS_W, 0);
+  ctx.lineTo(CANVAS_W, CANVAS_H);
+  ctx.stroke();
+
   // Draw both sides
   for (const side of [0, 1]) {
     const bx = side === 0 ? BASKET_X_LEFT : BASKET_X_RIGHT;
@@ -3227,26 +3359,61 @@ function drawCourt(ctx: CanvasRenderingContext2D) {
     ctx.arc(ftX * s, BASKET_Y * s, FT_CIRCLE_R * s, 0, Math.PI * 2);
     ctx.stroke();
 
-    // Three-point arc
+    // Three-point line: arc + corner straight lines
+    // Corner 3 is 22ft from basket center (sideways). Arc is 23.75ft radius.
+    const corner3Y = 22; // 22ft from basket center to sideline
+    const arcAngle = Math.acos(corner3Y / THREE_PT_RADIUS); // angle where arc meets corner line
+    const arcStartX = bx + dir * Math.sqrt(THREE_PT_RADIUS * THREE_PT_RADIUS - corner3Y * corner3Y);
+    const baselineX = side === 0 ? 0 : COURT_W;
+    
+    // Corner 3 straight lines (from baseline to arc start)
+    const cornerY1 = BASKET_Y - corner3Y;
+    const cornerY2 = BASKET_Y + corner3Y;
     ctx.beginPath();
-    const startAngle = side === 0 ? -Math.PI / 2 : Math.PI / 2;
-    const endAngle = side === 0 ? Math.PI / 2 : -Math.PI / 2;
-    ctx.arc(bx * s, BASKET_Y * s, THREE_PT_RADIUS * s, startAngle, endAngle, side === 1);
-    // Corner three lines
-    const cornerY1 = BASKET_Y - THREE_PT_RADIUS;
-    const cornerY2 = BASKET_Y + THREE_PT_RADIUS;
+    ctx.moveTo(baselineX * s, cornerY1 * s);
+    ctx.lineTo(arcStartX * s, cornerY1 * s);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(baselineX * s, cornerY2 * s);
+    ctx.lineTo(arcStartX * s, cornerY2 * s);
+    ctx.stroke();
+    
+    // Arc connecting the two corner lines
+    ctx.beginPath();
     if (side === 0) {
-      ctx.moveTo(0, Math.max(0, cornerY1 * s));
-      ctx.lineTo(0, 0);
-      ctx.moveTo(0, Math.min(CANVAS_H, cornerY2 * s));
-      ctx.lineTo(0, CANVAS_H);
+      ctx.arc(bx * s, BASKET_Y * s, THREE_PT_RADIUS * s, -arcAngle, arcAngle);
     } else {
-      ctx.moveTo(CANVAS_W, Math.max(0, cornerY1 * s));
-      ctx.lineTo(CANVAS_W, 0);
-      ctx.moveTo(CANVAS_W, Math.min(CANVAS_H, cornerY2 * s));
-      ctx.lineTo(CANVAS_W, CANVAS_H);
+      ctx.arc(bx * s, BASKET_Y * s, THREE_PT_RADIUS * s, Math.PI - arcAngle, Math.PI + arcAngle);
     }
     ctx.stroke();
+    
+    // Restricted area (4ft radius semicircle)
+    ctx.beginPath();
+    if (side === 0) {
+      ctx.arc(bx * s, BASKET_Y * s, 4 * s, -Math.PI / 2, Math.PI / 2);
+    } else {
+      ctx.arc(bx * s, BASKET_Y * s, 4 * s, Math.PI / 2, -Math.PI / 2);
+    }
+    ctx.stroke();
+    
+    // Hash marks on paint sides
+    const hashPaintTop = BASKET_Y - PAINT_W / 2;
+    const hashPaintBottom = BASKET_Y + PAINT_W / 2;
+    const paintStart = side === 0 ? bx : bx - PAINT_H;
+    const hashPositions = [7, 11, 14, 17]; // feet from baseline edge of paint
+    for (const hp of hashPositions) {
+      const hx = (paintStart + hp) * s;
+      // Top side
+      ctx.beginPath();
+      ctx.moveTo(hx, (hashPaintTop - 0.5) * s);
+      ctx.lineTo(hx, (hashPaintTop + 0.5) * s);
+      ctx.stroke();
+      // Bottom side
+      ctx.beginPath();
+      ctx.moveTo(hx, (hashPaintBottom - 0.5) * s);
+      ctx.lineTo(hx, (hashPaintBottom + 0.5) * s);
+      ctx.stroke();
+    }
 
     // Basket (rim)
     ctx.beginPath();
@@ -3260,8 +3427,8 @@ function drawCourt(ctx: CanvasRenderingContext2D) {
     // Backboard
     ctx.beginPath();
     const bbX = (bx - dir * 1) * s;
-    ctx.moveTo(bbX, (BASKET_Y - 3) * s);
-    ctx.lineTo(bbX, (BASKET_Y + 3) * s);
+    ctx.moveTo(bbX, (BASKET_Y - 2) * s);
+    ctx.lineTo(bbX, (BASKET_Y + 2) * s);
     ctx.strokeStyle = '#484f58';
     ctx.lineWidth = 3;
     ctx.stroke();
@@ -3301,8 +3468,20 @@ function drawPlayers(ctx: CanvasRenderingContext2D, state: GameState) {
 
   for (const sp of state.players) {
     const x = sp.pos.x * s;
-    const y = sp.pos.y * s;
-    const r = 12;
+    const groundY = sp.pos.y * s;
+    const jumpOffset = (sp.jumpZ || 0) * 3; // 1 foot = 3 pixels
+    const y = groundY - jumpOffset;
+    const r = 12 + (sp.jumpZ || 0) * 0.8;
+
+    // Shadow at ground level when jumping
+    if (sp.jumpZ > 0.5) {
+      const shadowSize = Math.max(4, 10 - sp.jumpZ * 0.5);
+      const shadowAlpha = Math.max(0.1, 0.35 - sp.jumpZ * 0.02);
+      ctx.beginPath();
+      ctx.arc(x, groundY, shadowSize, 0, Math.PI * 2);
+      ctx.fillStyle = `rgba(0,0,0,${shadowAlpha})`;
+      ctx.fill();
+    }
 
     // Role indicators
     if (sp.isScreening) {
