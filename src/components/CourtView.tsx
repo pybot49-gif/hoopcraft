@@ -738,26 +738,69 @@ function updateDefenseAssignments(state: GameState): void {
     });
     
   } else if (tactic === 'zone') {
-    // 2-3 Zone defense
-    const zonePositions = [
-      { x: basket.x - (basket.x > HALF_X ? 20 : -20), y: basket.y - 12 }, // Left guard
-      { x: basket.x - (basket.x > HALF_X ? 20 : -20), y: basket.y + 12 }, // Right guard
-      { x: basket.x - (basket.x > HALF_X ? 12 : -12), y: basket.y - 8 },  // Left forward
-      { x: basket.x - (basket.x > HALF_X ? 12 : -12), y: basket.y + 8 },  // Right forward
-      { x: basket.x - (basket.x > HALF_X ? 4 : -4), y: basket.y },         // Center
+    // 2-3 Zone defense — reactive to ball position
+    const dir = basket.x > HALF_X ? -1 : 1; // direction away from basket (toward half court)
+    const bx = basket.x;
+    const by = basket.y;
+    
+    // Base zone positions (2 guards up, 3 across the baseline)
+    const basePositions = [
+      { x: bx + dir * 20, y: by - 10 }, // Left guard (top)
+      { x: bx + dir * 20, y: by + 10 }, // Right guard (top)
+      { x: bx + dir * 10, y: by - 10 }, // Left forward (mid)
+      { x: bx + dir * 10, y: by + 10 }, // Right forward (mid)
+      { x: bx + dir * 4,  y: by },      // Center (paint)
     ];
     
-    // Shift toward ball
     if (ballHandler) {
-      const ballSide = ballHandler.pos.y > basket.y ? 1 : -1; // 1 = right side, -1 = left side
-      zonePositions.forEach(pos => {
-        pos.y += ballSide * 2; // Shift toward ball side
-      });
+      const ballX = ballHandler.pos.x;
+      const ballY = ballHandler.pos.y;
+      const ballSide = ballY > by ? 1 : -1; // right side = 1, left = -1
+      const ballDepth = Math.abs(ballX - bx); // how deep into offense
+      
+      // 1. Entire zone shifts toward ball side (strong shift)
+      const sideShift = ballSide * 5;
+      basePositions.forEach(pos => pos.y += sideShift);
+      
+      // 2. If ball is in the corner, collapse that side
+      if (Math.abs(ballY - by) > 15) {
+        // Ball in corner — nearest forward closes out, guard drops
+        const cornerIdx = ballSide > 0 ? 3 : 2; // right or left forward
+        const guardIdx = ballSide > 0 ? 1 : 0;
+        basePositions[cornerIdx] = { x: ballX, y: ballY + (-ballSide * 3) };
+        // Guard drops to cover the gap
+        basePositions[guardIdx].y += ballSide * 4;
+      }
+      
+      // 3. If ball penetrates inside 3pt line (< 20ft), zone collapses
+      if (ballDepth < 18) {
+        const collapseFactor = (18 - ballDepth) / 18; // 0 at perimeter, 1 at basket
+        basePositions.forEach(pos => {
+          pos.x = pos.x + (bx - pos.x) * collapseFactor * 0.4;
+          pos.y = pos.y + (by - pos.y) * collapseFactor * 0.2;
+        });
+      }
+      
+      // 4. Guard nearest to ball handler must close out (contest shooter)
+      const [g0dist, g1dist] = [
+        dist(basePositions[0], ballHandler.pos),
+        dist(basePositions[1], ballHandler.pos)
+      ];
+      const closestGuardIdx = g0dist < g1dist ? 0 : 1;
+      if (dist(basePositions[closestGuardIdx], ballHandler.pos) > 8) {
+        // Close out to ball handler
+        const toHandler = normalizeVector({
+          x: ballHandler.pos.x - basePositions[closestGuardIdx].x,
+          y: ballHandler.pos.y - basePositions[closestGuardIdx].y
+        });
+        basePositions[closestGuardIdx].x += toHandler.x * 5;
+        basePositions[closestGuardIdx].y += toHandler.y * 5;
+      }
     }
     
     defTeam.forEach((defender, i) => {
-      if (i < zonePositions.length) {
-        defender.targetPos = { ...zonePositions[i] };
+      if (i < basePositions.length) {
+        defender.targetPos = { ...basePositions[i] };
       }
     });
   }
@@ -806,19 +849,39 @@ function handleScreenDefense(state: GameState): void {
     
     if (screener) {
       if (tactic === 'man') {
-        // 50% switch, 50% fight through
-        if (state.rng() < 0.5) {
-          // SWITCH: swap assignments
-          const screenerDefender = findDefenderOf(screener, state);
-          if (screenerDefender) {
+        // Smart switching based on size mismatch risk
+        const screenerDefender = findDefenderOf(screener, state);
+        if (screenerDefender) {
+          // Would switching create a bad mismatch?
+          // Big guarding a PG after switch = BBQ chicken. PG guarding C in post = disaster.
+          const defHeight = defender.player.physical.height;
+          const screenerDefHeight = screenerDefender.player.physical.height;
+          const assignmentHeight = assignment.player.physical.height;
+          const screenerHeight = screener.player.physical.height;
+          
+          // Height difference if we switch: defender guards screener, screener's def guards our man
+          const mismatch1 = Math.abs(defHeight - screenerHeight); // our def vs screener
+          const mismatch2 = Math.abs(screenerDefHeight - assignmentHeight); // their def vs our man
+          const maxMismatch = Math.max(mismatch1, mismatch2);
+          
+          // Switch if mismatch is small (<8cm). Fight through if mismatch is big.
+          // Also factor in agility — agile defenders can fight through better
+          const agilityBonus = (defender.player.physical.agility || 70) / 200; // 0.25-0.5
+          const switchChance = maxMismatch < 8 ? 0.7 : maxMismatch < 15 ? 0.3 : 0.1;
+          
+          if (state.rng() < switchChance) {
             swapAssignments(defender, screenerDefender, state);
+          } else {
+            // FIGHT THROUGH: go around the screen
+            const awayFromScreen = normalizeVector({
+              x: assignment.pos.x - screener.pos.x,
+              y: assignment.pos.y - screener.pos.y
+            });
+            defender.targetPos = {
+              x: assignment.pos.x + awayFromScreen.x * 3,
+              y: assignment.pos.y + awayFromScreen.y * 3
+            };
           }
-        } else {
-          // FIGHT THROUGH: go around screen
-          defender.targetPos = {
-            x: assignment.pos.x + (assignment.pos.x > screener.pos.x ? 3 : -3),
-            y: assignment.pos.y
-          };
         }
       }
       // zone: ignore screen, stay in zone
