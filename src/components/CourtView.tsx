@@ -136,7 +136,7 @@ interface GameState {
   clockSeconds: number;
   shotClock: number;
   possession: 0 | 1;
-  phase: 'jumpball' | 'inbound' | 'advance' | 'setup' | 'action' | 'shooting' | 'rebound';
+  phase: 'jumpball' | 'inbound' | 'advance' | 'setup' | 'action' | 'shooting' | 'rebound' | 'freethrow';
   phaseTicks: number;
   running: boolean;
   speed: number;
@@ -163,6 +163,7 @@ interface GameState {
   advanceClock: number;
   possessionStage: PossessionStage;  // current stage
   playCompleted: boolean;  // has the primary play finished?
+  freeThrows: { shooter: SimPlayer; made: number; total: number; andOne: boolean } | null;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -189,41 +190,94 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
   const handler = getBallHandler(state);
   if (!handler) return;
   
+  // Don't override play actions
+  if (state.currentPlay) return;
+  
   const slots = getSlotPositions(basketPos, dir);
   
   for (const player of offTeam) {
     if (player === handler) continue;
     if (player.isScreening || player.isCutting) continue;
     
-    // Every ~3 seconds (180 ticks), consider a movement
-    const moveHash = (state.phaseTicks + player.courtIdx * 37) % 180;
+    // Each player checks for movement every ~2.5 seconds, staggered
+    const moveHash = (state.phaseTicks + player.courtIdx * 37) % 150;
     if (moveHash !== 0) continue;
     
-    const role = player.currentRole;
     const defender = findNearestDefender(player, state);
     const defDist = defender ? dist(defender.pos, player.pos) : 20;
+    const distToBasket = dist(player.pos, basketPos);
+    const roll = state.rng();
     
-    // V-cut: fake one way then go the other to get open
-    if (defDist < 5 && role === 'spacer') {
+    // 1. BACKDOOR CUT — defender overplaying (between player and ball, tight)
+    if (defender && defDist < 4 && distToBasket > 15) {
+      const defToBall = dist(defender.pos, handler.pos);
+      const playerToBall = dist(player.pos, handler.pos);
+      if (defToBall < playerToBall) {
+        // Defender is between us and ball → backdoor!
+        player.targetPos = {
+          x: basketPos.x - dir * 3,
+          y: basketPos.y + (player.pos.y > basketPos.y ? 3 : -3)
+        };
+        player.isCutting = true;
+        continue;
+      }
+    }
+    
+    // 2. V-CUT — defender tight but not overplaying
+    if (defDist < 5 && roll < 0.4) {
       const currentSlot = player.currentSlot;
       if (currentSlot) {
         const slotPos = slots.get(currentSlot);
         if (slotPos) {
-          // Quick jab step toward basket then back to slot
-          const jab = {
-            x: slotPos.x + dir * 4,
-            y: slotPos.y + (state.rng() > 0.5 ? 3 : -3)
+          const jabDir = state.rng() > 0.5 ? 1 : -1;
+          player.targetPos = {
+            x: slotPos.x + dir * 5,
+            y: slotPos.y + jabDir * 4
           };
-          player.targetPos = state.phaseTicks % 360 < 180 ? jab : { ...slotPos };
           player.isCutting = true;
+          // After jab, return to slot (handled by slot system next tick)
         }
       }
       continue;
     }
     
-    // Relocate if standing still too long and not in a play
-    if (!state.currentPlay && state.rng() < 0.15) {
+    // 3. PIN DOWN SCREEN — set screen for teammate near basket to get them open
+    if (player.currentRole === 'screener' || player.currentRole === 'postUp') {
+      const teammate = offTeam.find(p => 
+        p !== handler && p !== player && 
+        dist(p.pos, basketPos) < 15 && 
+        !checkIfOpen(p, state)
+      );
+      if (teammate && roll < 0.3) {
+        // Move next to teammate's defender to screen
+        const tmDef = findNearestDefender(teammate, state);
+        if (tmDef) {
+          player.targetPos = {
+            x: tmDef.pos.x + dir * 1,
+            y: tmDef.pos.y + (state.rng() > 0.5 ? 2 : -2)
+          };
+          player.isScreening = true;
+        }
+        continue;
+      }
+    }
+    
+    // 4. FLARE / RELOCATE to 3pt line — shooter drifts to open spot
+    if ((player.currentRole === 'spacer' || player.currentRole === 'cutter') && roll < 0.25) {
       findOpenSlot(player, state);
+      continue;
+    }
+    
+    // 5. DRIFT — subtle positional adjustment toward open space
+    if (defDist > 8) {
+      // Already open — small drift to stay in shooting pocket
+      const currentSlot = player.currentSlot;
+      if (currentSlot) {
+        const slotPos = slots.get(currentSlot);
+        if (slotPos) {
+          player.targetPos = { ...slotPos };
+        }
+      }
     }
   }
 }
@@ -649,25 +703,29 @@ function assignRoles(state: GameState): void {
     const guards = remainingPlayers.filter(p => p.player.position === 'PG' || p.player.position === 'SG');
     const wings = remainingPlayers.filter(p => p.player.position === 'SF');
     
-    // Assign screener (usually C/PF)
-    if (centers.length > 0) {
-      state.roles.set(centers[0].id, 'screener');
-    } else if (forwards.length > 0) {
-      state.roles.set(forwards[0].id, 'screener');
+    // Always assign all 5 roles so plays work properly
+    // Screener: best screen-setting big
+    const screenCandidates = [...centers, ...forwards];
+    if (screenCandidates.length > 0) {
+      state.roles.set(screenCandidates[0].id, 'screener');
     }
     
-    // Assign post up player for inside offense
-    if (tactic === 'inside' && centers.length > 0) {
-      state.roles.set(centers[0].id, 'postUp');
+    // PostUp: second big (or same C if only one)
+    const postCandidates = remainingPlayers
+      .filter(p => !state.roles.has(p.id))
+      .filter(p => p.player.position === 'C' || p.player.position === 'PF');
+    if (postCandidates.length > 0) {
+      state.roles.set(postCandidates[0].id, 'postUp');
+    } else if (screenCandidates.length > 0 && !state.roles.has(screenCandidates[0].id)) {
+      // Fallback: if no second big, a forward fills both roles
     }
     
-    // Assign cutters (athletic wings/guards)
-    const athleticPlayers = remainingPlayers
+    // Cutter: most athletic remaining player
+    const cutterCandidates = remainingPlayers
       .filter(p => !state.roles.has(p.id))
       .sort((a, b) => b.player.physical.speed - a.player.physical.speed);
-    
-    if (athleticPlayers.length > 0) {
-      state.roles.set(athleticPlayers[0].id, 'cutter');
+    if (cutterCandidates.length > 0) {
+      state.roles.set(cutterCandidates[0].id, 'cutter');
     }
     
     // Everyone else becomes spacer
@@ -842,26 +900,49 @@ function handleHelpDefense(state: GameState): void {
   const basket = getTeamBasket(state.possession);
   const distToBasket = dist(handler.pos, basket);
   
-  // If ball handler is driving (moving toward basket fast, within 15ft)
+  // Help defense triggers when ball handler penetrates within 15ft
   if (distToBasket < 15) {
     const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
+    const offTeam = state.players.filter(p => p.teamIdx === state.possession);
     
-    // Find the help defender (closest to basket, not guarding ball handler)
     const ballDefender = findDefenderOf(handler, state);
     const helpCandidates = defTeam
       .filter(d => d !== ballDefender)
       .sort((a, b) => dist(a.pos, basket) - dist(b.pos, basket));
     
     if (helpCandidates.length > 0) {
+      // PRIMARY HELP: closest defender steps into driving lane
       const helper = helpCandidates[0];
-      // Step into driving lane
       helper.targetPos = {
         x: (handler.pos.x + basket.x) / 2,
         y: (handler.pos.y + basket.y) / 2
       };
       
-      // The player the helper LEFT is now open
-      // This should be detected by offense's readAndReact → kick out pass
+      // ROTATION: next defender rotates to cover helper's man
+      if (helpCandidates.length > 1) {
+        const rotator = helpCandidates[1];
+        const helperAssignment = state.defAssignments.get(helper.id);
+        const abandonedPlayer = offTeam.find(p => p.id === helperAssignment);
+        if (abandonedPlayer) {
+          rotator.targetPos = {
+            x: abandonedPlayer.pos.x + (basket.x - abandonedPlayer.pos.x) * 0.3,
+            y: abandonedPlayer.pos.y + (basket.y - abandonedPlayer.pos.y) * 0.3
+          };
+          
+          // SECOND ROTATION: third defender covers rotator's man
+          if (helpCandidates.length > 2) {
+            const secondRotator = helpCandidates[2];
+            const rotatorAssignment = state.defAssignments.get(rotator.id);
+            const secondAbandoned = offTeam.find(p => p.id === rotatorAssignment);
+            if (secondAbandoned) {
+              secondRotator.targetPos = {
+                x: secondAbandoned.pos.x + (basket.x - secondAbandoned.pos.x) * 0.4,
+                y: secondAbandoned.pos.y + (basket.y - secondAbandoned.pos.y) * 0.4
+              };
+            }
+          }
+        }
+      }
     }
   }
 }
@@ -934,6 +1015,27 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   if (distToBasket < 5) {
     attemptShot(state, handler, basketPos);
     return;
+  }
+  
+  // SUPERSTAR TENDENCIES — signature plays
+  if (handler.player.isSuperstar) {
+    const skills = handler.player.skills;
+    // Sharpshooter superstar: pull-up 3 more aggressively
+    if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+    // Athletic freak superstar: attack basket relentlessly
+    if (skills.finishing.dunk >= 90 && distToBasket < 20) {
+      const defAhead = findNearestDefender(handler, state);
+      const laneClear = !defAhead || dist(defAhead.pos, handler.pos) > 3;
+      if (laneClear) {
+        const sDir = state.possession === 0 ? 1 : -1;
+        handler.targetPos = { x: basketPos.x - sDir * 1, y: basketPos.y };
+        handler.isCutting = true;
+        return;
+      }
+    }
   }
   
   // 2. Wide open catch-and-shoot — react immediately (no decision tick needed)
@@ -1211,6 +1313,9 @@ function tick(state: GameState): GameState {
     case 'rebound':
       handleRebound(state, offTeam, defTeam);
       break;
+    case 'freethrow':
+      handleFreeThrows(state);
+      break;
   }
 
   // Defense: only run full assignments during setup/action
@@ -1227,18 +1332,15 @@ function tick(state: GameState): GameState {
     defTeam.forEach(d => { d.isDefensiveSliding = false; });
   }
   
-  // Update offensive systems during action/setup
+  // Update offensive systems
   if (state.phase === 'action' || state.phase === 'setup') {
     assignRoles(state);
-    
-    if (state.currentPlay) {
-      updateCurrentPlay(state, basketPos, dir);
-    }
-    
+    // NOTE: updateCurrentPlay is called ONLY inside handleAction (not here)
     enforceFloorSpacing(state);
     fillEmptySlots(state);
-    
-    // Off-ball movement: non-ball-handler offensive players move purposefully
+  }
+  // Off-ball movement during action only (not setup — players still positioning)
+  if (state.phase === 'action') {
     offBallMovement(state, offTeam, basketPos, dir);
   }
 
@@ -1416,9 +1518,28 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Check if advanced enough (ball handler past half court + 8ft)
   if (Math.abs(handler.pos.x - HALF_X) > 8) {
-    state.phase = 'setup';
-    state.phaseTicks = 0;
-    state.advanceClock = 0;
+    // Fast break detection: if most defenders haven't crossed half court, skip setup
+    const defPastHalf = defTeam.filter(d => {
+      return state.possession === 0 
+        ? d.pos.x > HALF_X + 10  // team 0 attacks right
+        : d.pos.x < HALF_X - 10; // team 1 attacks left
+    }).length;
+    
+    if (defPastHalf <= 2) {
+      // Fast break! Skip setup, go straight to action
+      state.phase = 'action';
+      state.phaseTicks = 0;
+      state.advanceClock = 0;
+      // Auto-select fast break play
+      state.currentPlay = PLAYBOOK.find(p => p.name === 'Fast Break') || null;
+      state.currentStep = 0;
+      state.stepTimer = 0;
+      state.lastEvent = `Fast break! ${handler.player.name} pushes the pace!`;
+    } else {
+      state.phase = 'setup';
+      state.phaseTicks = 0;
+      state.advanceClock = 0;
+    }
   }
 }
 
@@ -1472,9 +1593,9 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   // No play active — use decision tree based on possession stage
   switch (state.possessionStage) {
     case 'early':
-      // Select and run a play if we don't have one
+      // Select and run a play
       selectPlay(state, offTeam);
-      break;
+      return; // play will run next tick via updateCurrentPlay
       
     case 'mid':
       // Play finished, read & react
@@ -1513,6 +1634,59 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       state.ball.carrier = nearestDefender;
       state.lastEvent = `${nearestDefender.player.name} steals the ball!`;
       changePossession(state, '');
+    }
+  }
+}
+
+function handleFreeThrows(state: GameState): void {
+  if (!state.freeThrows) return;
+  const ft = state.freeThrows;
+  
+  // Position players along the lane
+  if (state.phaseTicks === 1) {
+    const basket = getTeamBasket(state.possession);
+    ft.shooter.targetPos = { ...basket };
+    ft.shooter.targetPos.x += (state.possession === 0 ? -1 : 1) * 15; // FT line
+    state.lastEvent = `${ft.shooter.player.name} at the line (${ft.made}/${ft.total})`;
+  }
+  
+  // Shoot each FT at ~1.5s intervals
+  const ftIndex = ft.made + (state.phaseTicks > 90 ? 1 : 0);
+  
+  if (state.phaseTicks === 90 || state.phaseTicks === 180) {
+    // Attempt a free throw
+    const ftSkill = ft.shooter.player.skills.shooting?.free_throw || 75;
+    const ftPct = 0.5 + (ftSkill / 100) * 0.35; // range: 50%-85%
+    const made = state.rng() < ftPct;
+    
+    if (made) {
+      state.score[state.possession] += 1;
+      ft.made++;
+      state.lastEvent = `${ft.shooter.player.name} makes FT ${ft.made}/${ft.total} (${state.score[0]}-${state.score[1]})`;
+    } else {
+      state.lastEvent = `${ft.shooter.player.name} misses FT`;
+    }
+    
+    const isLastFT = (state.phaseTicks === 90 && ft.total === 1) || state.phaseTicks === 180;
+    
+    if (isLastFT) {
+      if (!made) {
+        // Last FT missed — rebound
+        const basket = getTeamBasket(state.possession);
+        state.ball.pos = { ...basket };
+        state.ball.bounceTarget = { 
+          x: basket.x + (state.rng() - 0.5) * 8,
+          y: basket.y + (state.rng() - 0.5) * 6
+        };
+        state.ball.bouncing = true;
+        state.ball.bounceProgress = 0;
+        state.phase = 'rebound';
+        state.phaseTicks = 0;
+      } else {
+        // Last FT made — other team inbounds
+        changePossession(state, '');
+      }
+      state.freeThrows = null;
     }
   }
 }
@@ -2014,7 +2188,8 @@ function updateBallFlight(state: GameState, dt: number): void {
           
           const scoringTeam = state.possession;
           state.score[scoringTeam] += pts;
-          state.lastEvent = `${shooterName} scores ${pts}! (${state.score[0]}-${state.score[1]})`;
+          const scoreType = pts === 3 ? '3-pointer' : shotDistance < 5 ? 'layup' : `${pts}pts`;
+          state.lastEvent = `${shooterName} scores! ${scoreType} (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
           // Miss — start bounce animation
@@ -2221,15 +2396,52 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
     state.ball.missType = null;
   }
   
+  // FOUL CHECK — fouls happen more on drives/layups when contested
+  // NBA: ~22 FTA/game per team, ~80-90 possessions, ~25% of shots are at rim
+  const isFouled = (() => {
+    if (contestDistance > 6) return false; // no contest = no foul
+    let foulChance = 0;
+    if (distToBasket < 5) foulChance = 0.15;       // layup/dunk — most fouls
+    else if (distToBasket < 10) foulChance = 0.08;  // floater range
+    else if (distToBasket < 22) foulChance = 0.03;  // mid-range
+    else foulChance = 0.04;                          // 3pt foul (rarer but happens)
+    if (contestDistance < 3) foulChance *= 1.5;      // heavily contested = more contact
+    return state.rng() < foulChance;
+  })();
+  
+  if (isFouled) {
+    const pts = distToBasket > 22 ? 3 : 2;
+    if (willScore) {
+      // AND-ONE! Shot counts + 1 FT
+      state.score[state.possession] += pts;
+      state.lastEvent = `AND ONE! ${shooterName} scores ${pts} + FT! (${state.score[0]}-${state.score[1]})`;
+      state.freeThrows = { shooter, made: 0, total: 1, andOne: true };
+    } else {
+      // Shooting foul — 2 or 3 FTs
+      state.lastEvent = `Shooting foul on ${shooterName}! ${pts} free throws`;
+      state.freeThrows = { shooter, made: 0, total: pts, andOne: false };
+    }
+    clearBallCarrier(state);
+    shooter.hasBall = true;
+    state.ball.carrier = shooter;
+    state.phase = 'freethrow';
+    state.phaseTicks = 0;
+    state.currentPlay = null;
+    return;
+  }
+  
   (state.ball as any).shooterName = shooterName;
   (state.ball as any).shooterPossession = state.possession;
+  
+  const contestStr = contestDistance < 3 ? ' (contested)' : contestDistance < 6 ? '' : ' (open)';
+  const shotType = distToBasket > 22 ? '3PT' : distToBasket > 10 ? 'mid-range' : distToBasket > 5 ? 'floater' : 'layup';
+  const playContext = state.currentPlay ? `[${state.currentPlay.name}] ` : '';
   
   clearBallCarrier(state);
   state.phase = 'shooting';
   state.currentPlay = null;
   
-  const contestStr = contestDistance < 3 ? ' (contested)' : contestDistance < 6 ? ' (lightly contested)' : '';
-  state.lastEvent = `${shooterName} shoots${contestStr} from ${distToBasket.toFixed(0)}ft`;
+  state.lastEvent = `${playContext}${shooterName} ${shotType}${contestStr}`;
 }
 
 type PassType = 'chest' | 'bounce' | 'lob' | 'overhead';
@@ -2485,6 +2697,7 @@ function initGameState(): GameState {
     advanceClock: 0,
     possessionStage: 'early',
     playCompleted: false,
+    freeThrows: null,
   };
 }
 
