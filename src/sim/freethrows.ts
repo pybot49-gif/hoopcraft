@@ -14,7 +14,10 @@ export function handleFreeThrows(state: GameState): void {
     state.lastEvent = `${ft.shooter.player.name} at the line (${ft.made}/${ft.total})`;
   }
   
-  if (state.phaseTicks === 90 || state.phaseTicks === 180) {
+  // Each FT at 90-tick intervals
+  const ftTicks = [90, 180, 270];
+  const currentFTIndex = ftTicks.indexOf(state.phaseTicks);
+  if (currentFTIndex !== -1 && currentFTIndex < ft.total) {
     const ftSkill = ft.shooter.player.skills.shooting?.free_throw || 75;
     const ftPct = 0.5 + (ftSkill / 100) * 0.35;
     const made = state.rng() < ftPct;
@@ -30,7 +33,7 @@ export function handleFreeThrows(state: GameState): void {
       state.lastEvent = `${ft.shooter.player.name} misses FT`;
     }
     
-    const isLastFT = (state.phaseTicks === 90 && ft.total === 1) || state.phaseTicks === 180;
+    const isLastFT = currentFTIndex === ft.total - 1;
     
     if (isLastFT) {
       if (!made) {

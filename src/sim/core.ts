@@ -256,7 +256,7 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
         : d.pos.x < HALF_X - 25;
     }).length;
     
-    if (defDeepBehind >= 3 && defNotBack >= 1 && !state.hasFastBroken && state.phaseTicks < 25) {
+    if (defDeepBehind >= 4 && defNotBack >= 2 && !state.hasFastBroken && state.phaseTicks < 20) {
       const offPastHalf = offTeam.filter(p => {
         return state.possession === 0
           ? p.pos.x > HALF_X + 5
@@ -341,7 +341,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     case 'late': {
       const bestScorer = findBestScorer(offTeam);
       const bestStats = state.boxStats.get(bestScorer.id);
-      const bestHogging = bestStats && teamAvgFGA > 3 && bestStats.fga > teamAvgFGA * 1.6;
+      const bestHogging = bestStats && teamAvgFGA > 2 && bestStats.fga > teamAvgFGA * 1.3;
       if (handler !== bestScorer && checkIfOpen(bestScorer, state) && !bestHogging) {
         passBall(state, handler, bestScorer);
         return;
@@ -381,41 +381,139 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       break;
   }
   
-  // Steal attempts
-  const nearestDefender = findNearestDefender(handler, state);
-  if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 300 === 0) {
-    const stealSkill = nearestDefender.player.skills.defense.steal;
-    const handlingSkill = handler.player.skills.playmaking.ball_handling;
-    const stealChance = 0.003 + (stealSkill / 100) * 0.01 - (handlingSkill / 100) * 0.004;
-    if (state.rng() < Math.max(0.002, stealChance)) {
-      clearBallCarrier(state);
-      nearestDefender.hasBall = true;
-      state.ball.carrier = nearestDefender;
-      addStat(state, nearestDefender.id, 'stl');
-      const handler2 = state.players.find(p => p.hasBall && p.teamIdx === state.possession);
-      if (handler2) addStat(state, handler2.id, 'tov');
-      state.lastEvent = `${nearestDefender.player.name} steals the ball!`;
+  // Steal attempts — per-possession check (once every ~2 seconds of action)
+  if (state.phaseTicks % 120 === 60) {
+    const nearestDef = findNearestDefender(handler, state);
+    if (nearestDef) {
+      const defDist = dist(nearestDef.pos, handler.pos);
+      const stealSkill = nearestDef.player.skills.defense.steal;
+      const handlingSkill = handler.player.skills.playmaking.ball_handling;
+      // Base ~7% per possession, scaled by proximity and skills
+      let stealChance = 0.04 + (stealSkill / 100) * 0.06 - (handlingSkill / 100) * 0.03;
+      if (defDist > 5) stealChance *= 0.2;
+      else if (defDist > 3) stealChance *= 0.5;
+      // Driving into traffic = more vulnerable
+      if (handler.isDriving && defDist < 4) stealChance *= 1.5;
+      stealChance = Math.max(0.01, Math.min(0.12, stealChance));
+      if (state.rng() < stealChance) {
+        addStat(state, handler.id, 'tov');
+        clearBallCarrier(state);
+        nearestDef.hasBall = true;
+        state.ball.carrier = nearestDef;
+        addStat(state, nearestDef.id, 'stl');
+        state.lastEvent = `${nearestDef.player.name} steals the ball!`;
+        changePossession(state, '');
+        return;
+      }
+    }
+  }
+  
+  // Turnover checks — various types
+  if (state.phaseTicks % 120 === 30) {
+    // Offensive foul / charge when driving into set defender
+    if (handler.isDriving) {
+      const nearDef = findNearestDefender(handler, state);
+      if (nearDef && dist(nearDef.pos, handler.pos) < 4) {
+        if (state.rng() < 0.05) {
+          addStat(state, handler.id, 'tov');
+          addStat(state, handler.id, 'pf');
+          state.lastEvent = `Offensive foul! Charge called on ${handler.player.name}!`;
+          changePossession(state, '');
+          return;
+        }
+        // Travel on drive
+        if (state.rng() < 0.015) {
+          addStat(state, handler.id, 'tov');
+          state.lastEvent = `Travel! ${handler.player.name} shuffles his feet!`;
+          changePossession(state, '');
+          return;
+        }
+        // Out of bounds on drive
+        const basket = getTeamBasket(state.possession);
+        if (handler.pos.y < 5 || handler.pos.y > 45) {
+          if (state.rng() < 0.03) {
+            addStat(state, handler.id, 'tov');
+            state.lastEvent = `${handler.player.name} drives out of bounds!`;
+            changePossession(state, '');
+            return;
+          }
+        }
+      }
+    }
+  }
+  
+  // General ball-handling turnover
+  if (state.phaseTicks % 120 === 90) {
+    const handling = handler.player.skills.playmaking.ball_handling;
+    let toChance = 0.04 - (handling / 100) * 0.02;
+    if (handler.fatigue > 0.3) toChance *= 1.3;
+    if (state.rng() < Math.max(0.005, toChance)) {
+      addStat(state, handler.id, 'tov');
+      state.lastEvent = `${handler.player.name} loses the handle!`;
       changePossession(state, '');
       return;
     }
   }
   
-  // Off-ball fouls
-  if (state.phaseTicks % 480 === 240) {
+  // 3-second violation check
+  if (state.phaseTicks % 180 === 0) {
+    const basket = getTeamBasket(state.possession);
+    for (const p of offTeam) {
+      if (p.hasBall) continue;
+      const dBasket = dist(p.pos, basket);
+      if (dBasket < 8) {
+        // Rough 3-second check: if they've been close to basket for extended time
+        if (state.rng() < 0.02) {
+          addStat(state, p.id, 'tov');
+          state.lastEvent = `3-second violation on ${p.player.name}!`;
+          changePossession(state, '');
+          return;
+        }
+      }
+    }
+  }
+
+  // Off-ball fouls — can lead to bonus FTs
+  if (state.phaseTicks % 300 === 150) {
     const defTeamAll = state.players.filter(p => p.teamIdx !== state.possession);
-    if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 3) {
+    // Count team fouls this quarter for bonus
+    const teamFouls = defTeamAll.reduce((sum, d) => sum + (state.boxStats.get(d.id)?.pf || 0), 0);
+    const inBonus = teamFouls >= 5; // simplified bonus rule
+    
+    // Reaching foul on ball handler
+    const nearDef = findNearestDefender(handler, state);
+    if (nearDef && dist(nearDef.pos, handler.pos) < 3) {
       if (state.rng() < 0.08) {
-        addStat(state, nearestDefender.id, 'pf');
-        state.lastEvent = `Reaching foul on ${nearestDefender.player.name}!`;
+        addStat(state, nearDef.id, 'pf');
+        if (inBonus) {
+          // Bonus free throws
+          state.freeThrows = { shooter: handler, made: 0, total: 2, andOne: false };
+          state.phase = 'freethrow';
+          state.phaseTicks = 0;
+          state.currentPlay = null;
+          state.lastEvent = `Reaching foul on ${nearDef.player.name}! Bonus free throws!`;
+          return;
+        }
+        state.lastEvent = `Reaching foul on ${nearDef.player.name}!`;
         return;
       }
     }
     for (const def of defTeamAll) {
-      if (def === nearestDefender) continue;
+      if (def === nearDef) continue;
       const assignedId = state.defAssignments.get(def.id);
       const assigned = state.players.find(p => p.id === assignedId);
-      if (assigned && dist(def.pos, assigned.pos) < 2.5 && state.rng() < 0.03) {
+      if (assigned && dist(def.pos, assigned.pos) < 2.5 && state.rng() < 0.04) {
         addStat(state, def.id, 'pf');
+        if (inBonus) {
+          // Nearest offensive player shoots FTs
+          const ftShooter = handler;
+          state.freeThrows = { shooter: ftShooter, made: 0, total: 2, andOne: false };
+          state.phase = 'freethrow';
+          state.phaseTicks = 0;
+          state.currentPlay = null;
+          state.lastEvent = `Off-ball foul on ${def.player.name}! Bonus free throws!`;
+          return;
+        }
         state.lastEvent = `Off-ball foul on ${def.player.name}!`;
         return;
       }
@@ -646,11 +744,10 @@ export function tick(state: GameState): GameState {
     if (p.targetPos) {
       const atTarget = dist(p.pos, p.targetPos) < 1.5;
       if (atTarget) {
-        p.isCutting = false;
         p.isScreening = false;
+        // Don't reset isCutting here — let movement logic control it
       }
     } else {
-      p.isCutting = false;
       p.isScreening = false;
     }
     if (!p.hasBall) { p.isDribbling = false; p.isDriving = false; }

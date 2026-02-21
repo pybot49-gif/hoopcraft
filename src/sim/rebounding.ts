@@ -87,6 +87,9 @@ export function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: S
       }
     }
     
+    // Position-based soft caps for rebound distribution
+    const posCaps: Record<string, number> = { PG: 8, SG: 8, SF: 12, PF: 15, C: 18 };
+    
     for (const p of competitors) {
       const rebSkill = p.player.skills.athletic.rebounding;
       const height = p.player.physical.height;
@@ -94,13 +97,21 @@ export function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: S
       const proximity = Math.max(0.1, 15 - dist(p.pos, reboundPos));
       
       const isDefender = p.teamIdx !== state.possession;
-      const boxOutBonus = isDefender ? 1.8 : 1.0;
+      const boxOutBonus = isDefender ? 1.6 : 1.0;
       
-      const posBonus = p.player.position === 'C' ? 1.3 
-        : p.player.position === 'PF' ? 1.15 : 1.0;
+      const posBonus = p.player.position === 'C' ? 1.4 
+        : p.player.position === 'PF' ? 1.2 
+        : p.player.position === 'SF' ? 1.0
+        : 0.8; // guards get fewer rebounds
       
-      const value = skillModifier(rebSkill) * (height / 180) * (vertical / 70) 
-        * proximity * boxOutBonus * posBonus * (0.5 + state.rng() * 0.5);
+      // Diminishing returns: each rebound reduces next chance by 5%
+      const currentRebs = state.boxStats.get(p.id)?.reb || 0;
+      const cap = posCaps[p.player.position] || 12;
+      const diminishing = Math.pow(0.92, Math.max(0, currentRebs - cap * 0.4));
+      
+      // Weight skill MORE, proximity LESS
+      const value = skillModifier(rebSkill) * 1.5 * (height / 180) * (vertical / 70) 
+        * Math.sqrt(proximity) * boxOutBonus * posBonus * diminishing * (0.5 + state.rng() * 0.5);
       
       if (value > bestValue) {
         bestValue = value;

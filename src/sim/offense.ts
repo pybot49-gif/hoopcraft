@@ -51,7 +51,8 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const handlerStats = state.boxStats.get(handler.id);
   const teamPlayers = state.players.filter(p => p.teamIdx === handler.teamIdx);
   const teamAvgFGA = teamPlayers.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
-  const isHogging = handlerStats && teamAvgFGA > 3 && handlerStats.fga > teamAvgFGA * 1.6;
+  const isHogging = handlerStats && teamAvgFGA > 2 && handlerStats.fga > teamAvgFGA * 1.3;
+  const isHardCapped = handlerStats && handlerStats.fga > 25;
   
   const noPasses = state.passCount === 0;
   const fewPasses = state.passCount < 2;
@@ -60,6 +61,17 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
   const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
   const laneClear = defDist > 6 && !defBetween;
+  
+  // HARD CAP: if player has too many FGA, always pass
+  if (isHardCapped && !mustAttack && openTeammates.length > 0) {
+    const target = openTeammates.sort((a, b) => {
+      const aFGA = state.boxStats.get(a.id)?.fga || 0;
+      const bFGA = state.boxStats.get(b.id)?.fga || 0;
+      return aFGA - bFGA;
+    })[0];
+    passBall(state, handler, target);
+    return;
+  }
   
   // 0. COMMITTED DRIVE
   if (handler.isDriving) {
@@ -118,6 +130,17 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
         return;
       }
     }
+  }
+  
+  // Hogging override: 90% pass when hogging
+  if ((isHogging || isHardCapped) && !mustAttack && openTeammates.length > 0 && state.rng() < 0.90) {
+    const target = openTeammates.sort((a, b) => {
+      const aFGA = state.boxStats.get(a.id)?.fga || 0;
+      const bFGA = state.boxStats.get(b.id)?.fga || 0;
+      return aFGA - bFGA;
+    })[0];
+    passBall(state, handler, target);
+    return;
   }
   
   // 2. Wide open catch-and-shoot

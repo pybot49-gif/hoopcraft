@@ -68,17 +68,25 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
   }
   
   // BLOCK CHECK
-  if (nearestDef && contestDistance < 4 && distToBasket < 8) {
+  if (nearestDef && contestDistance < 8 && distToBasket < 18) {
     const blockSkill = nearestDef.player.skills.defense.block || 60;
     const defVertical = nearestDef.player.physical.vertical || 70;
     const shooterHeight = shooter.player.physical.height;
     const defHeight = nearestDef.player.physical.height;
-    let blockChance = 0.01 + (blockSkill / 100) * 0.06;
-    if (distToBasket < 4) blockChance *= 1.5;
-    if (defHeight > shooterHeight + 5) blockChance *= 1.2;
-    if (isDunk) blockChance *= 0.4;
-    if (blockSkill < 65) blockChance *= 0.3;
-    blockChance = Math.min(0.12, blockChance);
+    let blockChance = 0.01 + (blockSkill / 100) * 0.05 + (defVertical / 100) * 0.015;
+    if (distToBasket < 6) blockChance *= 1.8;
+    else if (distToBasket < 12) blockChance *= 1.2;
+    else blockChance *= 0.5; // mid-range harder to block
+    if (contestDistance > 5) blockChance *= 0.4;
+    else if (contestDistance > 3) blockChance *= 0.7;
+    if (defHeight > shooterHeight + 5) blockChance *= 1.3;
+    if (isDunk) blockChance *= 0.3;
+    if (blockSkill < 50) blockChance *= 0.2;
+    blockChance = Math.min(0.15, blockChance);
+    // Defender jumps to contest
+    if (nearestDef.jumpZ === 0) {
+      nearestDef.jumpVelZ = (defVertical / 100) * 14 + 4;
+    }
     if (state.rng() < blockChance) {
       addStat(state, nearestDef.id, 'blk');
       addStat(state, shooter.id, 'fga');
@@ -139,16 +147,19 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
     state.ball.missType = null;
   }
   
-  // FOUL CHECK
+  // FOUL CHECK — increased rates for NBA-realistic FTA (~22/team/game)
   const isFouled = (() => {
-    if (contestDistance > 8) return false;
+    if (contestDistance > 12) return false;
     let foulChance = 0;
-    if (distToBasket < 5) foulChance = 0.22;
-    else if (distToBasket < 10) foulChance = 0.12;
-    else if (distToBasket < 22) foulChance = 0.05;
-    else foulChance = 0.06;
-    if (contestDistance < 3) foulChance *= 1.5;
-    if (contestDistance < 5) foulChance *= 1.2;
+    if (distToBasket < 5) foulChance = 0.30;
+    else if (distToBasket < 10) foulChance = 0.20;
+    else if (distToBasket < 22) foulChance = 0.10;
+    else foulChance = 0.08;
+    if (contestDistance < 3) foulChance *= 1.6;
+    else if (contestDistance < 5) foulChance *= 1.3;
+    else if (contestDistance > 8) foulChance *= 0.4;
+    // Driving to basket = more fouls
+    if (shooter.isDriving && distToBasket < 10) foulChance *= 1.4;
     return state.rng() < foulChance;
   })();
   

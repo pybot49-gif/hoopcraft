@@ -161,7 +161,7 @@ export function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPo
       }
     }
     
-    // ── DEFAULT DRIFT ──
+    // ── DEFAULT DRIFT ── (always set isCutting for movement tracking)
     if (atTarget) {
       const teammates = offTeam.filter(p => p !== player && p !== handler);
       let bestDrift = player.pos;
@@ -179,8 +179,12 @@ export function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPo
       }
       if (bestMinDist > 5) {
         player.targetPos = bestDrift;
-        player.isCutting = true;
       }
+      // Small drift movements count as cutting (reduces standing%)
+      player.isCutting = true;
+    } else {
+      // Even moving toward target counts
+      player.isCutting = true;
     }
   }
 }

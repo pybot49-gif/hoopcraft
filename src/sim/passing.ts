@@ -2,6 +2,7 @@ import { GameState, SimPlayer, Vec2, PassType } from './types';
 import { dist, distanceToLine, clearBallCarrier, findNearestDefender, getBallHandler, getTeamBasket, checkIfOpen } from './utils';
 import { skillModifier } from '../engine/utils';
 import { changePossession } from './core';
+import { addStat } from './stats';
 
 export function choosePassType(from: SimPlayer, to: SimPlayer, defTeam: SimPlayer[], rng: () => number): PassType {
   const passDist = dist(from.pos, to.pos);
@@ -192,7 +193,7 @@ export function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void
     
     if (dToLine < 2 && defDist < passDist && defDist > 2) {
       const stealSkill = def.player.skills.defense.steal;
-      let baseChance = 0.0005 + (stealSkill / 100) * 0.006;
+      let baseChance = 0.01 + (stealSkill / 100) * 0.03;
       
       const defReach = 8 + (def.player.physical.height / 200) * 1.5;
       
@@ -205,6 +206,9 @@ export function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void
       }
       
       if (state.rng() < baseChance) {
+        // Credit steal and turnover
+        addStat(state, def.id, 'stl');
+        addStat(state, from.id, 'tov');
         clearBallCarrier(state);
         def.hasBall = true;
         state.ball.carrier = def;
