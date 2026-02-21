@@ -1089,6 +1089,15 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     }
   }
   
+  // 3d. ALLEY-OOP — if a teammate is cutting to the rim and we can lob it
+  if (!mustAttack && handler.player.skills.playmaking.lob_pass >= 65) {
+    const oopTarget = findAlleyOopTarget(state, handler, basketPos);
+    if (oopTarget && state.rng() < 0.6) { // 60% chance to attempt when opportunity exists
+      throwAlleyOop(state, handler, oopTarget, basketPos);
+      return;
+    }
+  }
+  
   // 4. Pass to create a better shot (but only if not holding too long)
   if (!mustAttack) {
     // Roller cutting to basket
@@ -1993,10 +2002,12 @@ function executeRoleAction(player: SimPlayer, action: RoleAction, state: GameSta
       }
       break;
     case 'roll':
+      // Roll to basket — sprint toward rim (alley-oop eligible)
       player.targetPos = {
-        x: basketPos.x - dir * 8,
-        y: basketPos.y + (state.rng() - 0.5) * 6
+        x: basketPos.x - dir * 5,
+        y: basketPos.y + (state.rng() - 0.5) * 4
       };
+      player.isCutting = true; // makes them eligible for alley-oop detection
       break;
     case 'pop':
       const popPos = slots.get(action.slot);
@@ -2297,7 +2308,12 @@ function updateBallFlight(state: GameState, dt: number): void {
           
           const scoringTeam = state.possession;
           state.score[scoringTeam] += pts;
-          const scoreType = pts === 3 ? '3-pointer' : shotDistance < 3 ? 'at the rim' : shotDistance < 8 ? 'layup' : `${pts}pts`;
+          const isAlleyOop = (state.ball as any).isAlleyOop;
+          const scoreType = isAlleyOop ? 'ALLEY-OOP DUNK!' 
+            : pts === 3 ? '3-pointer' 
+            : shotDistance < 3 ? 'at the rim' 
+            : shotDistance < 8 ? 'layup' 
+            : `${pts}pts`;
           state.lastEvent = `${shooterName} scores! ${scoreType} (${state.score[0]}-${state.score[1]})`;
           changePossession(state, '');
         } else {
@@ -2337,10 +2353,16 @@ function updateBallFlight(state: GameState, dt: number): void {
             'back_iron': ['Off the back iron!', 'Clanks off the rim!', 'Hits back iron, long rebound!'],
             'front_rim': ['Front rim!', 'Short! Off the front rim!'],
           };
-          const texts = missTexts[missType] || ['Miss!'];
-          state.lastEvent = texts[Math.floor(state.rng() * texts.length)];
+          const isAlleyOopMiss = (state.ball as any).isAlleyOop;
+          if (isAlleyOopMiss) {
+            state.lastEvent = ['Alley-oop attempt! Can\'t finish!', 'Lob is off! Alley-oop fails!', 'Alley-oop bobbled!'][Math.floor(state.rng() * 3)];
+          } else {
+            const texts = missTexts[missType] || ['Miss!'];
+            state.lastEvent = texts[Math.floor(state.rng() * texts.length)];
+          }
         }
         state.ball.isShot = false;
+        (state.ball as any).isAlleyOop = false;
       } else {
         // Pass completed
         const offTeam = state.players.filter(p => p.teamIdx === state.possession);
@@ -2644,6 +2666,103 @@ function getPassZ(passType: PassType, t: number, passDist: number): { fromZ: num
     case 'lob':      return { fromZ: 7, peakZ: 12 + passDist * 0.1 };  // high arc
     case 'overhead': return { fromZ: 8, peakZ: 9 + passDist * 0.05 };
   }
+}
+
+// ══════════════════════════════════════════════════════════════════════════
+// ALLEY-OOP SYSTEM
+// ══════════════════════════════════════════════════════════════════════════
+
+function findAlleyOopTarget(state: GameState, passer: SimPlayer, basketPos: Vec2): SimPlayer | null {
+  const offTeam = state.players.filter(p => p.teamIdx === state.possession && p !== passer);
+  
+  let bestTarget: SimPlayer | null = null;
+  let bestScore = 0;
+  
+  for (const p of offTeam) {
+    const oopSkill = p.player.skills.finishing.alley_oop;
+    const dunkSkill = p.player.skills.finishing.dunk;
+    const vertical = p.player.physical.vertical;
+    const distToBasket = dist(p.pos, basketPos);
+    
+    // Must be near the basket (cutting to rim / rolling)
+    if (distToBasket > 12) continue;
+    // Must be athletic enough to catch and finish
+    if (oopSkill < 65 || dunkSkill < 65 || vertical < 65) continue;
+    
+    // Check if there's a clear lane (no defender right at the rim blocking)
+    const nearDef = findNearestDefender(p, state);
+    const defDist = nearDef ? dist(nearDef.pos, p.pos) : 20;
+    // Defender must not be between target and basket (rim protector)
+    const rimProtector = nearDef && dist(nearDef.pos, basketPos) < 5 && nearDef.player.skills.defense.block >= 75;
+    if (rimProtector) continue; // too risky — shot blocker at rim
+    
+    // Check passer's lob ability
+    const lobSkill = passer.player.skills.playmaking.lob_pass;
+    const passDist = dist(passer.pos, p.pos);
+    if (passDist < 8 || passDist > 35) continue; // too close or too far for a lob
+    
+    // Score this opportunity
+    const score = (oopSkill / 100) * 3 + (dunkSkill / 100) * 2 + (vertical / 100) * 2
+      + (lobSkill / 100) * 2 + (defDist > 5 ? 2 : 0) + (p.isCutting ? 3 : 0)
+      + (p.player.isSuperstar ? 2 : 0);
+    
+    if (score > bestScore) {
+      bestScore = score;
+      bestTarget = p;
+    }
+  }
+  
+  // Only attempt if opportunity is good enough
+  return bestScore > 10 ? bestTarget : null;
+}
+
+function throwAlleyOop(state: GameState, passer: SimPlayer, target: SimPlayer, basketPos: Vec2): void {
+  const lobSkill = passer.player.skills.playmaking.lob_pass;
+  const oopSkill = target.player.skills.finishing.alley_oop;
+  const dunkSkill = target.player.skills.finishing.dunk;
+  const vertical = target.player.physical.vertical;
+  
+  // Success chance: depends on passer lob + receiver oop + vertical
+  // Elite PG + elite finisher = ~75%. Average + average = ~35%.
+  const successChance = 0.15
+    + skillModifier(lobSkill) * 0.20
+    + skillModifier(oopSkill) * 0.20
+    + skillModifier(dunkSkill) * 0.10
+    + (vertical / 100) * 0.15;
+  
+  const willScore = state.rng() < Math.min(0.85, successChance);
+  
+  // Lob pass: very high arc targeting above the rim
+  const passDist = dist(passer.pos, basketPos);
+  
+  state.ball.inFlight = true;
+  state.ball.flightFrom = { ...passer.pos };
+  state.ball.flightTo = { ...basketPos }; // lob goes to the BASKET, not the player
+  state.ball.flightFromZ = 8;
+  state.ball.flightPeakZ = 16 + passDist * 0.1; // very high arc
+  state.ball.flightProgress = 0;
+  state.ball.flightDuration = 0.5 + passDist * 0.015; // slightly slower than normal pass
+  state.ball.isShot = true; // treated as a shot attempt
+  state.ball.shotWillScore = willScore;
+  state.ball.missType = willScore ? null : (state.rng() < 0.5 ? 'rim_out' : 'back_iron');
+  (state.ball as any).shooterName = target.player.name;
+  (state.ball as any).isAlleyOop = true;
+  
+  clearBallCarrier(state);
+  
+  // Target sprints to basket to catch it
+  target.targetPos = { ...basketPos };
+  target.isCutting = true;
+  
+  state.dribbleTime = 0;
+  state.lastPassFrom = passer.id;
+  state.lastPassTime = state.gameTime;
+  
+  const playContext = state.currentPlay ? `[${state.currentPlay.name}] ` : '';
+  state.lastEvent = `${playContext}${passer.player.name} ALLEY-OOP to ${target.player.name}!`;
+  
+  state.phase = 'shooting';
+  state.currentPlay = null;
 }
 
 function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {

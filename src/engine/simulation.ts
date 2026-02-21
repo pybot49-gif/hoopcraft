@@ -128,7 +128,22 @@ function pickShooter(
     options.push({ item: 'dunk', weight: skillModifier(shooter.skills.finishing.dunk) * dunkTendency });
     options.push({ item: 'post', weight: skillModifier(shooter.skills.finishing.post_move) * postTendency });
     options.push({ item: 'floater', weight: skillModifier(shooter.skills.finishing.floater) * (isGuard ? 12 : 5) });
+    // Alley-oop: requires athletic finisher + a good passer on the team
+    if (shooter.skills.finishing.alley_oop >= 70 && shooter.physical.vertical >= 70) {
+      const bestLobber = players.reduce((best, p) => 
+        p.skills.playmaking.lob_pass > best.skills.playmaking.lob_pass ? p : best);
+      if (bestLobber.skills.playmaking.lob_pass >= 65 && bestLobber.id !== shooter.id) {
+        options.push({ item: 'alley_oop', weight: skillModifier(shooter.skills.finishing.alley_oop) * 6 });
+      }
+    }
     playType = pickWeighted(options, rng);
+  }
+
+  // Alley-oop always has the best lobber as assister
+  if (playType === 'alley_oop') {
+    const bestLobber = players.filter(p => p.id !== shooter.id)
+      .reduce((best, p) => p.skills.playmaking.lob_pass > best.skills.playmaking.lob_pass ? p : best);
+    assister = bestLobber;
   }
 
   return { shooter, assister, playType };
@@ -165,6 +180,9 @@ function resolveShot(
     case 'floater':
       baseChance = 0.46;
       baseChance *= skillModifier(shooter.skills.finishing.floater); break;
+    case 'alley_oop':
+      baseChance = 0.65;
+      baseChance *= skillModifier(shooter.skills.finishing.alley_oop); break;
     default:
       baseChance = 0.44;
   }
@@ -213,6 +231,7 @@ function shotDescription(playType: string, rng: Rng): string {
     dunk: ['throws it down', 'rises up for the slam', 'explodes to the rim', 'hammers it home'],
     post: ['backs down in the post', 'works the post', 'goes to work in the paint', 'spins in the post'],
     floater: ['floats one up', 'drops a floater', 'tosses up a teardrop', 'releases a soft floater'],
+    alley_oop: ['catches the lob and throws it DOWN', 'rises for the ALLEY-OOP', 'skies for the alley-oop finish', 'catches and slams the lob'],
     fastbreak_layup: ['races down the court for the layup', 'finishes in transition', 'gets the easy bucket in transition'],
     fastbreak_dunk: ['throws down the fast break dunk', 'finishes with authority in transition', 'slams it on the break'],
   };
@@ -224,7 +243,7 @@ function resultText(made: boolean, blocked: boolean, isThree: boolean, playType:
   if (blocked) return 'BLOCKED!';
   if (!made) return ['No good.', 'Misses.', 'Rims out.', 'Off the mark.'][Math.floor(rng() * 4)];
   if (isThree) return ['BANG! Three pointer!', 'SPLASH! From downtown!', 'MONEY! Three ball!', 'DRAINS IT! Three!'][Math.floor(rng() * 4)];
-  if (playType.includes('dunk')) return 'AND THE SLAM! What a play!';
+  if (playType.includes('dunk') || playType === 'alley_oop') return 'AND THE SLAM! What a play!';
   return ['Good!', 'Count it!', 'Scores!', 'Bucket!'][Math.floor(rng() * 4)];
 }
 
