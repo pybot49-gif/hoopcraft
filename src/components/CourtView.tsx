@@ -336,10 +336,10 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
     // ── CUTTER: actively cut through the lane ─────────────────────────
     if (player.currentRole === 'cutter' && roll < 0.5) {
       if (distToBasket > 14) {
-        // Cut to paint EDGE, not all the way to basket (creates passing lanes)
+        // Cut to mid-range area — creates catch-and-shoot opportunities
         player.targetPos = {
-          x: basketPos.x - dir * (8 + state.rng() * 6), // 8-14ft from basket
-          y: basketPos.y + (state.rng() - 0.5) * 12
+          x: basketPos.x - dir * (10 + state.rng() * 8), // 10-18ft from basket
+          y: basketPos.y + (state.rng() - 0.5) * 14
         };
         player.isCutting = true;
         continue;
@@ -859,19 +859,21 @@ function updateDefenseAssignments(state: GameState): void {
         const distFromBall = ballHandler ? dist(assignedOffPlayer.pos, ballHandler.pos) : 20;
         
         if (distFromBall < 15) {
-          // Deny position (1 pass away)
+          // Deny position (1 pass away) — active stance, ready to jump the lane
           const denyPos = ballHandler ? {
             x: assignedOffPlayer.pos.x + (ballHandler.pos.x - assignedOffPlayer.pos.x) * 0.4,
             y: assignedOffPlayer.pos.y + (ballHandler.pos.y - assignedOffPlayer.pos.y) * 0.4
           } : assignedOffPlayer.pos;
           
           defender.targetPos = denyPos;
+          defender.isDefensiveSliding = true; // actively sliding in deny
         } else {
-          // Help position (2+ passes away)
+          // Help position (2+ passes away) — sag toward paint
           defender.targetPos = {
             x: assignedOffPlayer.pos.x + (basket.x - assignedOffPlayer.pos.x) * 0.4,
             y: assignedOffPlayer.pos.y + (basket.y - assignedOffPlayer.pos.y) * 0.3
           };
+          defender.isDefensiveSliding = true; // still moving, not standing
         }
       }
     });
@@ -1144,8 +1146,9 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   const mustAttack = holdTime > 3.5 || state.shotClock < 5;
   const passFirst = holdTime < 1.8 && !mustAttack;
   
-  // Pass penalty: reduce shot probability when no passes made yet
+  // Pass penalty: reduce shot probability when team hasn't moved the ball
   const noPasses = state.passCount === 0;
+  const fewPasses = state.passCount < 2;
   
   // Lane clear requires defender >6ft away AND not between handler and basket
   const defAhead = findNearestDefender(handler, state);
@@ -1202,7 +1205,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   if (handler.player.isSuperstar && !passFirst) {
     const skills = handler.player.skills;
     // Sharpshooter superstar: pull-up 3 more aggressively
-    if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen && !noPasses) {
+    if (skills.shooting.three_point >= 90 && distToBasket > 22 && distToBasket < 30 && isOpen && !fewPasses) {
       attemptShot(state, handler, basketPos);
       return;
     }
@@ -1241,7 +1244,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     const bestShootingSkill = Math.max(catchShoot, three);
     // Good shooters (≥75) shoot immediately. Decent (65-74) sometimes. Bad (<65) never from 3.
     if (bestShootingSkill >= 75 || (bestShootingSkill >= 65 && state.rng() < 0.3)) {
-      if (!noPasses || state.rng() < 0.3) { // penalize iso no-pass shots
+      if (!fewPasses || state.rng() < 0.25) { // penalize iso no-pass shots
         attemptShot(state, handler, basketPos);
         return;
       }
@@ -1261,7 +1264,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 2c. Close-range catch-and-finish — received pass near basket, finish immediately
   if (holdTime < 0.8 && distToBasket < 10 && distToBasket > 3) {
     const finishing = handler.player.skills.finishing.layup;
-    if (finishing >= 65 && state.rng() < 0.6) {
+    if (finishing >= 65) {
       attemptShot(state, handler, basketPos);
       return;
     }
@@ -1374,7 +1377,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   // 3b. Open mid-range — take it if aggressive (and can't drive)
   if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
-    if (!noPasses || state.rng() < 0.4) {
+    if (!noPasses || state.rng() < 0.35) {
       attemptShot(state, handler, basketPos);
       return;
     }
@@ -1384,7 +1387,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   if (isOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
     if (three >= 70 || (three >= 65 && aggressive) || mustAttack) {
-      if (!noPasses || state.rng() < 0.4) {
+      if (!noPasses || state.rng() < 0.35) {
         attemptShot(state, handler, basketPos);
         return;
       }
@@ -1694,26 +1697,37 @@ function tick(state: GameState): GameState {
   if (state.phase === 'action' || state.phase === 'setup') {
     offBallMovement(state, offTeam, basketPos, dir);
     
-    // Center paint override — centers gravitate toward paint even if plays put them elsewhere
-    // Only apply when not actively cutting/screening (don't interrupt play actions)
+    // Center paint magnetism — centers should spend ~35-40% of offensive time in paint
+    // Override every few ticks: if center is outside paint, pull them in
     for (const p of offTeam) {
       if (p.player.position !== 'C') continue;
-      if (p.isCutting || p.isScreening || p.hasBall) continue;
+      if (p.isScreening || p.hasBall) continue; // don't interrupt screens or ball handling
       const dBasket = dist(p.pos, basketPos);
-      if (dBasket > 14) {
-        // Center too far from paint — override target to paint area
-        const otherBigNearPaint = offTeam.some(op => 
-          op !== p && (op.player.position === 'C' || op.player.position === 'PF') && dist(op.pos, basketPos) < 8
-        );
-        if (!otherBigNearPaint) {
-          const side = p.pos.y > basketPos.y ? 1 : -1;
-          p.targetPos = {
-            x: basketPos.x - dir * (5 + state.rng() * 4),
-            y: basketPos.y + side * (3 + state.rng() * 4)
-          };
-          p.isCutting = true;
-        }
+      
+      // Check every 30 ticks (~0.5s) — frequent enough to maintain paint presence
+      if ((state.phaseTicks + (p.courtIdx * 7)) % 30 !== 0) continue;
+      
+      const otherBigInDeepPaint = offTeam.some(op => 
+        op !== p && (op.player.position === 'C' || op.player.position === 'PF') && dist(op.pos, basketPos) < 7
+      );
+      
+      if (dBasket > 10 && !otherBigInDeepPaint) {
+        // Center outside paint — move to low block area (not right at basket)
+        const side = p.pos.y > basketPos.y ? 1 : -1;
+        p.targetPos = {
+          x: basketPos.x - dir * (5 + state.rng() * 4), // 5-9ft from basket
+          y: basketPos.y + side * (4 + state.rng() * 4)
+        };
+        p.isCutting = true;
+      } else if (dBasket > 12 && otherBigInDeepPaint) {
+        // Other big in paint — go to elbow/high post
+        p.targetPos = {
+          x: basketPos.x - dir * (12 + state.rng() * 4), // elbow area
+          y: basketPos.y + (state.rng() - 0.5) * 10
+        };
+        p.isCutting = true;
       }
+      // If in paint already (<8ft), stay there — small adjustments handled by offBallMovement
     }
   }
   // During advance, wings and trailers already have targets from handleAdvance
