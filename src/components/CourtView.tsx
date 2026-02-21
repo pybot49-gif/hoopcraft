@@ -95,6 +95,7 @@ interface SimPlayer {
   isCutting: boolean;
   isScreening: boolean;
   isDribbling: boolean;       // actively dribbling (slower, can be stolen)
+  isDriving: boolean;         // committed to driving to basket — don't reconsider
   catchTimer: number;         // seconds until player can act after catching (0 = ready)
   sprintTimer: number;        // seconds sprinting (affects speed decay)
 }
@@ -1002,6 +1003,20 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // Exception: immediate reactions (layup range, wide open catch-and-shoot)
   const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
+  // 0. COMMITTED DRIVE — once driving, keep going until at rim or completely stopped
+  if (handler.isDriving) {
+    if (distToBasket < 6) {
+      // Arrived at rim — finish!
+      handler.isDriving = false;
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+    // Still driving — keep going toward basket, don't reconsider
+    handler.targetPos = { ...basketPos };
+    handler.isCutting = true;
+    return;
+  }
+  
   // 1. At the rim — always finish (layup/dunk)
   if (distToBasket < 8) {
     attemptShot(state, handler, basketPos);
@@ -1061,9 +1076,10 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   // 3a. DRIVE when lane is open — layup/dunk is best shot in basketball
   if (laneClear && distToBasket > 8 && distToBasket < 28) {
-    // Drive straight at the rim
+    // Commit to drive — won't reconsider until reaching basket
     handler.targetPos = { ...basketPos };
     handler.isCutting = true;
+    handler.isDriving = true;
     return;
   }
   
@@ -1085,6 +1101,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     if (three < 65 && laneClear) {
       handler.targetPos = { ...basketPos };
       handler.isCutting = true;
+      handler.isDriving = true;
       return;
     }
   }
@@ -1134,6 +1151,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 6. Dribble toward basket to create opportunity
   handler.targetPos = { x: basketPos.x, y: basketPos.y + (state.rng() - 0.5) * 4 };
   handler.isCutting = true;
+  handler.isDriving = true;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1375,7 +1393,7 @@ function tick(state: GameState): GameState {
     p.isDefensiveSliding = false;
     p.isCutting = false;
     p.isScreening = false;
-    if (!p.hasBall) p.isDribbling = false;
+    if (!p.hasBall) { p.isDribbling = false; p.isDriving = false; }
   }
 
   // Ball follows carrier
@@ -2189,9 +2207,24 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
     const perimD = player.player.skills.defense?.perimeter_d || 70;
     baseSpeed *= 0.6 + (perimD / 100) * 0.2; // range: 0.6 (bad) to 0.8 (elite)
   }
-  if (player.isCutting) baseSpeed *= 1.2;
-  if (player.isDribbling) baseSpeed *= 0.8;          // dribbling slows you down
+  if (player.isCutting && !player.isDribbling) baseSpeed *= 1.2; // only sprint if not dribbling
+  if (player.isDribbling) {
+    // Dribbling significantly limits speed — ball handling skill matters
+    const handling = player.player.skills.playmaking?.ball_handling || 60;
+    baseSpeed *= 0.55 + (handling / 100) * 0.2; // range: 0.55 (bad handler) to 0.75 (elite)
+  }
   if (player.catchTimer > 0) baseSpeed *= 0.3;       // catching the ball — nearly stationary
+  
+  // Being tightly guarded slows you down (body contact, can't get a clean step)
+  if (player.hasBall && state.phase === 'action') {
+    const nearDef = state.players.find(p => p.teamIdx !== player.teamIdx && dist(p.pos, player.pos) < 3);
+    if (nearDef) {
+      const defStr = nearDef.player.physical.strength || 70;
+      const offStr = player.player.physical.strength || 70;
+      // Stronger defender = harder to move. Range: 0.75 (weak off vs strong def) to 0.95 (strong off vs weak def)
+      baseSpeed *= 0.75 + (offStr - defStr + 30) / 300;
+    }
+  }
   
   // Sprint/jog: far = sprint, close = controlled
   if (d > 25) {
@@ -2271,18 +2304,51 @@ function updateBallFlight(state: GameState, dt: number): void {
     if (t >= 1) {
       const centers = state.players.filter(p => p.player.position === 'C');
       if (centers.length >= 2) {
-        const winner = centers[Math.random() < 0.5 ? 0 : 1];
-        clearBallCarrier(state);
-        winner.hasBall = true;
-        state.ball.carrier = winner;
-        state.possession = winner.teamIdx;
-        state.lastEvent = `${winner.player.name} wins the tip-off!`;
-        state.phase = 'advance';
-        state.phaseTicks = 0;
-        state.gameStarted = true;
+        // Determine tip-off winner based on height + vertical + rng
+        const [c0, c1] = centers;
+        const c0score = c0.player.physical.height + c0.player.physical.vertical * 0.5 + state.rng() * 20;
+        const c1score = c1.player.physical.height + c1.player.physical.vertical * 0.5 + state.rng() * 20;
+        const winner = c0score >= c1score ? c0 : c1;
+        
+        // Jumper TAPS the ball to a teammate — not grab!
+        const winnerTeam = state.players.filter(p => p.teamIdx === winner.teamIdx && p !== winner);
+        // Find closest teammate to tap to
+        const tapTarget = winnerTeam.sort((a, b) => dist(a.pos, winner.pos) - dist(b.pos, winner.pos))[0];
+        
+        if (tapTarget) {
+          // Ball flies from center to teammate (tap animation)
+          state.ball.inFlight = true;
+          state.ball.flightFrom = { x: HALF_X, y: BASKET_Y };
+          state.ball.flightTo = { ...tapTarget.pos };
+          state.ball.flightFromZ = 12; // tapped at apex
+          state.ball.flightPeakZ = 13;
+          state.ball.flightProgress = 0;
+          state.ball.flightDuration = 0.4;
+          state.ball.isShot = false;
+          state.ball.jumpBall = { active: false, height: 0, winner: null };
+          clearBallCarrier(state);
+          state.possession = winner.teamIdx;
+          state.lastEvent = `${winner.player.name} tips it to ${tapTarget.player.name}!`;
+          state.phase = 'advance';
+          state.phaseTicks = 0;
+          state.gameStarted = true;
+        } else {
+          // Fallback: winner gets ball
+          clearBallCarrier(state);
+          winner.hasBall = true;
+          state.ball.carrier = winner;
+          state.possession = winner.teamIdx;
+          state.lastEvent = `${winner.player.name} wins the tip-off!`;
+          state.phase = 'advance';
+          state.phaseTicks = 0;
+          state.gameStarted = true;
+          state.ball.inFlight = false;
+          state.ball.jumpBall!.active = false;
+        }
+      } else {
+        state.ball.inFlight = false;
+        state.ball.jumpBall!.active = false;
       }
-      state.ball.inFlight = false;
-      state.ball.jumpBall.active = false;
     }
   } else {
     // Regular flight with z-arc
@@ -2858,6 +2924,7 @@ function resetPossession(state: GameState): void {
     p.isCutting = false;
     p.isScreening = false;
     p.isDribbling = false;
+    p.isDriving = false;
     p.catchTimer = 0;
     p.sprintTimer = 0;
   });
@@ -2914,6 +2981,7 @@ function initGameState(): GameState {
         isCutting: false,
         isScreening: false,
         isDribbling: false,
+        isDriving: false,
         catchTimer: 0,
         sprintTimer: 0,
       });
