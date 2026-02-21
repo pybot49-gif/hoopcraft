@@ -158,8 +158,7 @@ interface GameState {
   stepTimer: number;
   lastPassFrom: string | null;
   lastPassTime: number;
-  passHistory: string[];      // last 4 player IDs who touched ball (anti-ping-pong)
-  passCount: number;          // passes this possession
+  dribbleTime: number;        // seconds current handler has held the ball
   crossedHalfCourt: boolean;
   advanceClock: number;
   possessionStage: PossessionStage;  // current stage
@@ -922,21 +921,23 @@ function swapAssignments(def1: SimPlayer, def2: SimPlayer, state: GameState): vo
 
 function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Vec2): void {
   const distToBasket = dist(handler.pos, basketPos);
-  const isOpen = checkIfOpen(handler, state);  // defender > 6ft
-  const isWideOpen = checkIfWideOpen(handler, state); // defender > 8ft
+  const isOpen = checkIfOpen(handler, state);
+  const isWideOpen = checkIfWideOpen(handler, state);
   const openTeammates = getOpenTeammates(state, handler);
+  const holdTime = state.dribbleTime; // how long this player has had the ball
   
-  // Too many passes — stop passing, just attack
-  const tooManyPasses = state.passCount > 5;
+  // Only make decisions periodically (~every 0.5s), not 60x/sec
+  // Exception: immediate reactions (layup range, wide open catch-and-shoot)
+  const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
-  // 1. Layup/dunk range — always finish
+  // 1. Layup/dunk range — always finish immediately
   if (distToBasket < 5) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 2. Wide open 3-pointer — take it immediately
-  if (isWideOpen && distToBasket > 22 && distToBasket < 27) {
+  // 2. Wide open catch-and-shoot — react immediately (no decision tick needed)
+  if (isWideOpen && holdTime < 0.5 && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
     if (three >= 70 || state.rng() < 0.7) {
       attemptShot(state, handler, basketPos);
@@ -944,38 +945,58 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     }
   }
   
-  // 3. DRIVE TO BASKET if lane is open — layups/dunks > mid-range shots
+  // For all other decisions, only evaluate every ~0.5s (not every tick)
+  if (!isDecisionTick) return;
+  
+  // 3. Read the defense and decide
   const defAhead = findNearestDefender(handler, state);
   const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
   const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
   const laneClear = defDist > 4 || !defBetween;
   
+  // Aggression increases the longer you hold the ball (triple threat → attack)
+  // 0-1s: patient, look to pass if good option
+  // 1-2s: look to drive or shoot
+  // 2s+: must attack, no more passing
+  const aggressive = holdTime > 1.5;
+  const mustAttack = holdTime > 3 || state.shotClock < 6;
+  
+  // 3a. DRIVE when lane is open — layup/dunk is best shot in basketball
   if (laneClear && distToBasket > 5 && distToBasket < 28) {
-    // Attack the basket — always prefer driving over pull-up jumper
     const dir = state.possession === 0 ? 1 : -1;
-    const driveAngle = state.rng() > 0.5 ? 2 : -2;
     handler.targetPos = {
       x: basketPos.x - dir * 1,
-      y: basketPos.y + driveAngle,
+      y: basketPos.y + (state.rng() > 0.5 ? 2 : -2),
     };
-    handler.isCutting = true; // sprint to basket
+    handler.isCutting = true;
     return;
   }
   
-  // 4. Open mid-range — only if can't drive
-  if (isOpen && distToBasket < 22 && distToBasket > 5) {
+  // 3b. Open mid-range — take it if aggressive
+  if (isOpen && distToBasket < 22 && distToBasket > 5 && (aggressive || mustAttack)) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 5. Kick out to open teammate (but not if we've passed too much already)
-  if (!tooManyPasses) {
+  // 3c. Open 3 — take it
+  if (isOpen && distToBasket > 22 && distToBasket < 27) {
+    const three = handler.player.skills.shooting.three_point;
+    if (three >= 65 || aggressive) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+  }
+  
+  // 4. Pass to create a better shot (but only if not holding too long)
+  if (!mustAttack) {
+    // Roller cutting to basket
     const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
     if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
       passBall(state, handler, roller);
       return;
     }
     
+    // Open 3pt shooter
     const openThreeShooter = openTeammates.find(p => {
       const d = dist(p.pos, basketPos);
       return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 70;
@@ -985,20 +1006,21 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
       return;
     }
     
-    if (openTeammates.length > 0) {
+    // Swing pass (only in first ~1.5s of holding ball)
+    if (!aggressive && openTeammates.length > 0) {
       const closest = openTeammates.sort((a, b) => dist(a.pos, handler.pos) - dist(b.pos, handler.pos));
       passBall(state, handler, closest[0]);
       return;
     }
   }
   
-  // 6. Must score — too many passes or no options. Take the shot.
+  // 5. Must score — take whatever shot
   if (distToBasket < 25) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 7. Nothing else — dribble toward basket and attack
+  // 6. Dribble toward basket to create opportunity
   handler.targetPos = { x: basketPos.x, y: basketPos.y + (state.rng() - 0.5) * 4 };
   handler.isCutting = true;
 }
@@ -1012,8 +1034,8 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
   const candidates = offTeam.filter(p => {
     if (p === ballHandler) return false;
     
-    // Anti-ping-pong: don't pass to anyone who touched ball in last 3 passes
-    if (state.passHistory.slice(-3).includes(p.id)) return false;
+    // Don't pass back to immediate last passer for 1.5s
+    if (state.lastPassFrom === p.id && state.gameTime - state.lastPassTime < 1.5) return false;
     
     // Check if pass lane is blocked
     if (isPassLaneBlocked(ballHandler, p, state)) return false;
@@ -1433,8 +1455,9 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   // Can't act while catching the ball
   if (handler.catchTimer > 0) return;
   
-  // Set dribble state
+  // Set dribble state and track how long this player has held the ball
   handler.isDribbling = true;
+  state.dribbleTime += 1 / 60;
   
   // Update possession stage
   state.possessionStage = getPossessionStage(state.shotClock);
@@ -2303,9 +2326,7 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   
   state.lastPassFrom = from.id;
   state.lastPassTime = state.gameTime;
-  state.passHistory.push(from.id);
-  if (state.passHistory.length > 6) state.passHistory.shift();
-  state.passCount++;
+  state.dribbleTime = 0; // reset — new handler starts fresh
   state.lastEvent = `${from.player.name} ${passType} pass to ${to.player.name}`;
 }
 
@@ -2329,8 +2350,7 @@ function resetPossession(state: GameState): void {
   state.advanceClock = 0;
   state.lastPassFrom = null;
   state.lastPassTime = 0;
-  state.passHistory = [];
-  state.passCount = 0;
+  state.dribbleTime = 0;
   state.possessionStage = 'early';
   state.playCompleted = false;
   
@@ -2460,8 +2480,7 @@ function initGameState(): GameState {
     stepTimer: 0,
     lastPassFrom: null,
     lastPassTime: 0,
-    passHistory: [],
-    passCount: 0,
+    dribbleTime: 0,
     crossedHalfCourt: false,
     advanceClock: 0,
     possessionStage: 'early',
