@@ -1468,16 +1468,23 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       }
     }
     
-  // Stage 3 (4s+): Execute inbound pass
+  // Stage 3 (4s+): Execute inbound pass — prefer PG, then most open player
   } else {
     const inbounder = getBallHandler(state);
     if (inbounder) {
       const receivers = offTeam
         .filter(p => p !== inbounder)
-        .sort((a, b) => dist(a.pos, inbounder.pos) - dist(b.pos, inbounder.pos));
+        .map(p => {
+          const nearDef = findNearestDefender(p, state);
+          const openness = nearDef ? dist(nearDef.pos, p.pos) : 15;
+          const pgBonus = p.player.position === 'PG' ? 10 : 0;
+          const proximity = 20 - dist(p.pos, inbounder.pos); // closer = better
+          return { player: p, score: openness + pgBonus + proximity };
+        })
+        .sort((a, b) => b.score - a.score);
       
       if (receivers.length > 0) {
-        passBall(state, inbounder, receivers[0]);
+        passBall(state, inbounder, receivers[0].player);
         state.phase = 'advance';
         state.phaseTicks = 0;
       }
@@ -1548,15 +1555,31 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     }).length;
     
     if (defPastHalf <= 2) {
-      // Fast break! Skip setup, go straight to action
+      // Fast break! Count advantage
+      const offPastHalf = offTeam.filter(p => {
+        return state.possession === 0
+          ? p.pos.x > HALF_X + 5
+          : p.pos.x < HALF_X - 5;
+      }).length;
+      
       state.phase = 'action';
       state.phaseTicks = 0;
       state.advanceClock = 0;
-      // Auto-select fast break play
-      state.currentPlay = PLAY_FAST_BREAK;
+      
+      if (defPastHalf === 0 && offPastHalf >= 1) {
+        // Uncontested — just attack the rim
+        state.currentPlay = PLAY_CHERRY_PICK;
+        state.lastEvent = `Breakaway! ${handler.player.name} is all alone!`;
+      } else if (offPastHalf >= defPastHalf + 2) {
+        // 3v1 or 4v2 — use secondary break with passing
+        state.currentPlay = PLAY_SECONDARY_BREAK;
+        state.lastEvent = `Fast break! ${offPastHalf}v${defPastHalf}!`;
+      } else {
+        state.currentPlay = PLAY_FAST_BREAK;
+        state.lastEvent = `Fast break! ${handler.player.name} pushes the pace!`;
+      }
       state.currentStep = 0;
       state.stepTimer = 0;
-      state.lastEvent = `Fast break! ${handler.player.name} pushes the pace!`;
     } else {
       state.phase = 'setup';
       state.phaseTicks = 0;
@@ -1642,20 +1665,44 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       break;
   }
   
-  // Steal attempts — check once per ~5 seconds (every 50 ticks)
-  // NBA reference: best stealers ~2.0 steals/game, avg ~0.8/game
-  // ~100 possessions/team → elite = 2%, avg = 0.8%
-  // Skill 96 (S) → ~2.5%, skill 60 (D) → ~0.5%
+  // Steal attempts — check once per ~5 seconds (every 300 ticks)
   const nearestDefender = findNearestDefender(handler, state);
   if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 300 === 0) {
     const stealSkill = nearestDefender.player.skills.defense.steal;
-    const stealChance = 0.001 + (stealSkill / 100) * 0.012; // D(60)=0.8%, S(96)=1.3%
-    if (state.rng() < stealChance) {
+    const handlingSkill = handler.player.skills.playmaking.ball_handling;
+    // Better handlers are harder to steal from
+    const stealChance = 0.003 + (stealSkill / 100) * 0.01 - (handlingSkill / 100) * 0.004;
+    if (state.rng() < Math.max(0.002, stealChance)) {
       clearBallCarrier(state);
       nearestDefender.hasBall = true;
       state.ball.carrier = nearestDefender;
       state.lastEvent = `${nearestDefender.player.name} steals the ball!`;
       changePossession(state, '');
+      return;
+    }
+  }
+  
+  // Off-ball fouls — check once per ~8 seconds (every 480 ticks)
+  // NBA: ~20 fouls/team/game, minus shooting fouls (~8-10), leaves ~10-12 non-shooting fouls
+  if (state.phaseTicks % 480 === 240) {
+    const defTeamAll = state.players.filter(p => p.teamIdx !== state.possession);
+    // Reach-in on ball handler
+    if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 3) {
+      if (state.rng() < 0.08) {
+        state.lastEvent = `Reaching foul on ${nearestDefender.player.name}!`;
+        // Side-out, same team keeps possession (simplified — no bonus tracking)
+        return;
+      }
+    }
+    // Off-ball hold/push — any defender tight on their man
+    for (const def of defTeamAll) {
+      if (def === nearestDefender) continue;
+      const assignedId = state.defAssignments.get(def.id);
+      const assigned = state.players.find(p => p.id === assignedId);
+      if (assigned && dist(def.pos, assigned.pos) < 2.5 && state.rng() < 0.03) {
+        state.lastEvent = `Off-ball foul on ${def.player.name}!`;
+        return;
+      }
     }
   }
 }
