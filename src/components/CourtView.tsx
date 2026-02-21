@@ -806,33 +806,6 @@ function updateDefenseAssignments(state: GameState): void {
   }
 }
 
-function processHelpDefense(state: GameState): void {
-  const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
-  const ballHandler = getBallHandler(state);
-  const basket = getTeamBasket(state.possession);
-  
-  if (!ballHandler) return;
-  
-  // Check if ball handler is driving (close to basket)
-  const distToBasket = dist(ballHandler.pos, basket);
-  if (distToBasket < 15) {
-    // Find help defender
-    const helpDefender = defTeam.find(def => {
-      const assignedPlayer = state.players.find(p => p.id === state.defAssignments.get(def.id));
-      return assignedPlayer && assignedPlayer !== ballHandler && dist(def.pos, ballHandler.pos) < 12;
-    });
-    
-    if (helpDefender) {
-      // Help on ball handler
-      const helpPos = {
-        x: ballHandler.pos.x + (basket.x - ballHandler.pos.x) * 0.6,
-        y: ballHandler.pos.y + (basket.y - ballHandler.pos.y) * 0.6
-      };
-      helpDefender.targetPos = helpPos;
-    }
-  }
-}
-
 function handleScreenDefense(state: GameState): void {
   const defTeam = state.players.filter(p => p.teamIdx !== state.possession);
   const tactic = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
@@ -989,12 +962,17 @@ function getOpenTeammates(state: GameState, handler: SimPlayer): SimPlayer[] {
 
 function findBestScorer(team: SimPlayer[]): SimPlayer {
   return team.reduce((best, p) => {
-    const scoringSkill = (p.player.skills.shooting.three_point + p.player.skills.shooting.mid_range + p.player.skills.finishing.layup) / 3;
-    const bestScoringSkill = (best.player.skills.shooting.three_point + best.player.skills.shooting.mid_range + best.player.skills.finishing.layup) / 3;
+    // Use the player's best scoring skills (shooters vs finishers)
+    const shootingMax = Math.max(p.player.skills.shooting.three_point, p.player.skills.shooting.mid_range);
+    const finishingMax = Math.max(p.player.skills.finishing.layup, p.player.skills.finishing.dunk, p.player.skills.finishing.post_move);
+    const scoringSkill = Math.max(shootingMax, finishingMax);
     
-    // Superstar bonus
-    const pScore = scoringSkill + (p.player.isSuperstar ? 20 : 0);
-    const bestScore = bestScoringSkill + (best.player.isSuperstar ? 20 : 0);
+    const bestShootMax = Math.max(best.player.skills.shooting.three_point, best.player.skills.shooting.mid_range);
+    const bestFinishMax = Math.max(best.player.skills.finishing.layup, best.player.skills.finishing.dunk, best.player.skills.finishing.post_move);
+    const bestScoringSkill = Math.max(bestShootMax, bestFinishMax);
+    
+    const pScore = scoringSkill + (p.player.isSuperstar ? 15 : 0);
+    const bestScore = bestScoringSkill + (best.player.isSuperstar ? 15 : 0);
     
     return pScore > bestScore ? p : best;
   });
@@ -1243,6 +1221,18 @@ function tick(state: GameState): GameState {
     } else {
       state.running = false;
       return state;
+    }
+  }
+
+  // Sync safety: ensure hasBall and carrier are consistent
+  if (state.ball.carrier && !state.ball.carrier.hasBall) {
+    state.ball.carrier.hasBall = true;
+  }
+  const ballHolders = state.players.filter(p => p.hasBall);
+  if (ballHolders.length > 1) {
+    // Multiple players think they have the ball — fix by keeping only carrier
+    for (const p of state.players) {
+      p.hasBall = (p === state.ball.carrier);
     }
   }
 
@@ -2516,13 +2506,23 @@ function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2): void {
   const tacticD = state.possession === 0 ? state.awayTacticD : state.homeTacticD;
   const advantage = getTacticAdvantage(tacticO, tacticD);
   
-  // Contest factor
+  // Contest factor — distance + defender's contest skill matters
   const nearestDef = findNearestDefender(shooter, state);
   const contestDistance = nearestDef ? dist(nearestDef.pos, shooter.pos) : 10;
-  let contestModifier = contestDistance < 3 ? 0.6 : contestDistance < 5 ? 0.8 : 1.0;
+  let contestModifier = 1.0;
+  if (nearestDef && contestDistance < 6) {
+    const contestSkill = nearestDef.player.skills.defense.shot_contest || 60;
+    // Tight contest (< 3ft): 55-75% depending on defender skill
+    // Medium (3-6ft): 75-95%
+    if (contestDistance < 3) {
+      contestModifier = 0.55 + (1 - contestSkill / 100) * 0.2;
+    } else {
+      contestModifier = 0.75 + (1 - contestSkill / 100) * 0.2;
+    }
+  }
   
   if (shooter.player.isSuperstar) {
-    contestModifier = Math.max(contestModifier, 0.8);
+    contestModifier = Math.max(contestModifier, 0.75); // superstars create own shot
   }
   
   if (state.shotClock < 3) {
