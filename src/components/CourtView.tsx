@@ -412,14 +412,20 @@ function findOpenSlot(player: SimPlayer, state: GameState): void {
   const basketPos = getTeamBasket(state.possession);
   const dir = state.possession === 0 ? 1 : -1;
   const slots = getSlotPositions(basketPos, dir);
+  const isBig = player.player.position === 'C' || player.player.position === 'PF';
   
-  // Find closest open slot
+  // Centers/PFs prefer interior slots; guards prefer perimeter
+  const interiorSlots: SlotName[] = ['SLOT_LOW_POST_L', 'SLOT_LOW_POST_R', 'SLOT_LEFT_ELBOW', 'SLOT_RIGHT_ELBOW'];
+  
   let closestSlot: SlotName | null = null;
   let closestDistance = Infinity;
   
   for (const [slotName, slotPos] of slots.entries()) {
-    if (!state.slots.get(slotName)) {  // Slot is open
-      const distance = dist(player.pos, slotPos);
+    if (!state.slots.get(slotName)) {
+      let distance = dist(player.pos, slotPos);
+      // Bias: centers prefer interior slots, guards avoid them
+      if (isBig && interiorSlots.includes(slotName)) distance *= 0.5; // strongly prefer
+      if (!isBig && interiorSlots.includes(slotName)) distance *= 1.5; // avoid
       if (distance < closestDistance) {
         closestDistance = distance;
         closestSlot = slotName;
@@ -1135,8 +1141,8 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // Exception: immediate reactions (layup range, wide open catch-and-shoot)
   const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
-  const mustAttack = holdTime > 3 || state.shotClock < 6;
-  const passFirst = holdTime < 1.5 && !mustAttack;
+  const mustAttack = holdTime > 3.5 || state.shotClock < 5;
+  const passFirst = holdTime < 1.8 && !mustAttack;
   
   // Pass penalty: reduce shot probability when no passes made yet
   const noPasses = state.passCount === 0;
@@ -1264,8 +1270,8 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // For all other decisions, only evaluate every ~0.5s (not every tick)
   if (!isDecisionTick) return;
   
-  // === PASS-FIRST SECTION: When holding < 1.5s and not desperate, look to pass 70% of the time ===
-  if (passFirst && openTeammates.length > 0 && state.rng() < 0.7) {
+  // === PASS-FIRST SECTION: When holding < 2s and not desperate, look to pass 80% of the time ===
+  if (passFirst && openTeammates.length > 0 && state.rng() < 0.8) {
     // SUPERSTAR TARGETING — feed the star!
     const superstar = openTeammates.find(p => p.player.isSuperstar);
     if (superstar && state.rng() < 0.5) {
@@ -1316,9 +1322,9 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 3. Read the defense — ALWAYS look for the better pass before attacking
   // NBA players move the ball ~4-5 passes per made basket
   // Pass probability increases when team hasn't passed enough this possession
-  // passHunger: strong desire to pass when team hasn't moved ball
-  // 0 passes → 0.75, 1 pass → 0.6, 2 passes → 0.5, 3+ passes → 0.35
-  const passHunger = Math.min(0.75, 0.35 + Math.max(0, 3 - state.passCount) * 0.15);
+  // passHunger: strong desire to pass when team hasn't moved ball enough
+  // 0 passes → 0.80, 1 pass → 0.65, 2 passes → 0.50, 3 passes → 0.40, 4+ → 0.30
+  const passHunger = Math.min(0.80, 0.30 + Math.max(0, 4 - state.passCount) * 0.15);
   
   // Pass to create a better shot — applicable at all hold times (not just passFirst)
   if (!mustAttack && openTeammates.length > 0 && state.rng() < passHunger) {
@@ -1358,8 +1364,8 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   
   const aggressive = holdTime > 2;
   
-  // 3a. DRIVE when lane is ACTUALLY clear — but only after 1+ passes
-  if (laneClear && distToBasket > 8 && distToBasket < 28 && (state.passCount > 0 || holdTime > 2)) {
+  // 3a. DRIVE when lane is ACTUALLY clear — but only after ball has moved some
+  if (laneClear && distToBasket > 8 && distToBasket < 28 && (state.passCount >= 1 || holdTime > 2.5)) {
     handler.targetPos = { ...basketPos };
     handler.isCutting = true;
     handler.isDriving = true;
