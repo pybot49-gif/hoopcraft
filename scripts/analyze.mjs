@@ -113,7 +113,8 @@ const report = await page.evaluate(() => {
   // Event-level tracking
   let passes = 0, steals = 0, turnovers = 0, fastBreaks = 0;
   let scores = 0, rebounds = 0, blocks = 0, fouls = 0;
-  let alleyOops = 0;
+  let alleyOops = 0, assists = 0;
+  let lastAssists = [0, 0];
   const shotTypes = {}; // event text → count
   const passTypes = { chest: 0, skip: 0, lob: 0, bounce: 0, outlet: 0, alleyoop: 0, unknown: 0 };
 
@@ -152,6 +153,10 @@ const report = await page.evaluate(() => {
       if (ev.includes('block')) blocks++;
       if (ev.includes('foul')) fouls++;
       if (ev.includes('alley-oop') || ev.includes('alley oop')) alleyOops++;
+      // Count assists from event text as backup
+      if (ev.includes('ast:')) {
+        // assist already tracked from tick data
+      }
       // Pass type
       if (ev.includes('chest pass')) passTypes.chest++;
       else if (ev.includes('skip pass')) passTypes.skip++;
@@ -183,6 +188,15 @@ const report = await page.evaluate(() => {
       playCount[t.play] = (playCount[t.play] || 0) + 1;
     }
     lastPlay = t.play || null;
+
+    // Assists (from tick data)
+    if (t.assists) {
+      const totalAst = t.assists[0] + t.assists[1];
+      if (totalAst > lastAssists[0] + lastAssists[1]) {
+        assists = totalAst;
+      }
+      lastAssists = [...t.assists];
+    }
 
     // Possessions
     if (t.possession !== lastPossession) { totalPossessions++; lastPossession = t.possession; }
@@ -316,8 +330,9 @@ const report = await page.evaluate(() => {
 
   // ── 2. SCORING & EVENTS ────────────────────────────────────────────
   L.push(`┌─ 2. SCORING & EVENTS ${sr.slice(22)}`);
-  L.push(`│ Scores: ${scores} | Passes: ${passes} | Steals: ${steals} | Rebounds: ${rebounds}`);
+  L.push(`│ Scores: ${scores} | Assists: ${assists} | Passes: ${passes} | Steals: ${steals} | Rebounds: ${rebounds}`);
   L.push(`│ Blocks: ${blocks} | Fouls: ${fouls} | Turnovers: ${turnovers} | Alley-oops: ${alleyOops}`);
+  L.push(`│ Assist Rate: ${scores > 0 ? (assists / scores * 100).toFixed(0) : 0}% of scores assisted — NBA avg: ~60-65%`);
   L.push(`│ Fast Breaks: ${fastBreaks}/${totalPossessions} (${pct(fastBreaks, totalPossessions)}%) — NBA avg: 15-20%`);
   L.push(`│ Passes/Possession: ${(passes / totalPossessions).toFixed(1)} — NBA avg: ~4-5 per made basket`);
   L.push(`│`);
@@ -483,6 +498,12 @@ const report = await page.evaluate(() => {
     const standPct = (pd.total - pd.cutting - pd.screening - pd.driving - pd.dribbling) / pd.total * 100;
     if (standPct > 85) issues.push(`❌ ${pd.name} standing ${standPct.toFixed(0)}% of the time — not moving`);
   }
+
+  // Assist rate
+  const assistRate = scores > 0 ? assists / scores * 100 : 0;
+  if (assistRate < 40) issues.push(`❌ Assist rate ${assistRate.toFixed(0)}% — too low (NBA: 60-65%)`);
+  else if (assistRate < 55) warnings.push(`⚠️  Assist rate ${assistRate.toFixed(0)}% — slightly low`);
+  else good.push(`✅ Assist rate ${assistRate.toFixed(0)}%`);
 
   // Team spacing
   for (let ti = 0; ti < 2; ti++) {
