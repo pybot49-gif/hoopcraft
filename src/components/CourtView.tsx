@@ -94,6 +94,9 @@ interface SimPlayer {
   isDefensiveSliding: boolean;
   isCutting: boolean;
   isScreening: boolean;
+  isDribbling: boolean;       // actively dribbling (slower, can be stolen)
+  catchTimer: number;         // seconds until player can act after catching (0 = ready)
+  sprintTimer: number;        // seconds sprinting (affects speed decay)
 }
 
 type MissType = 'rim_out' | 'back_iron' | 'airball' | 'blocked' | 'front_rim' | null;
@@ -155,6 +158,8 @@ interface GameState {
   stepTimer: number;
   lastPassFrom: string | null;
   lastPassTime: number;
+  passHistory: string[];      // last 4 player IDs who touched ball (anti-ping-pong)
+  passCount: number;          // passes this possession
   crossedHalfCourt: boolean;
   advanceClock: number;
   possessionStage: PossessionStage;  // current stage
@@ -601,6 +606,25 @@ const PLAYBOOK: Play[] = [
 // ══════════════════════════════════════════════════════════════════════════
 
 function assignRoles(state: GameState): void {
+  // Don't reassign roles while a play is running — play needs stable role assignments
+  if (state.currentPlay && state.roles.size > 0) {
+    // Only update ballHandler role to track who has the ball
+    const ballHandler = getBallHandler(state);
+    if (ballHandler && !state.roles.has(ballHandler.id)) {
+      // Ball was passed — new handler gets ballHandler role, old handler keeps their role
+      const oldHandler = [...state.roles.entries()].find(([_, r]) => r === 'ballHandler');
+      if (oldHandler) {
+        // Give old handler the new handler's old role (or spacer)
+        const newHandlerOldRole = state.roles.get(ballHandler.id) || 'spacer';
+        state.roles.set(oldHandler[0], newHandlerOldRole);
+      }
+      state.roles.set(ballHandler.id, 'ballHandler');
+    }
+    // Update player references
+    state.players.forEach(p => { p.currentRole = state.roles.get(p.id); });
+    return;
+  }
+
   const offTeam = state.players.filter(p => p.teamIdx === state.possession);
   const tactic = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
   
@@ -685,15 +709,19 @@ function updateDefenseAssignments(state: GameState): void {
       if (!assignedOffPlayer) return;
       
       if (assignedOffPlayer === ballHandler) {
-        // On-ball defense: tight coverage, between player and basket
+        // On-ball defense: stay between ball handler and basket, 3-4ft gap
         const basketDir = normalizeVector({
           x: basket.x - assignedOffPlayer.pos.x,
           y: basket.y - assignedOffPlayer.pos.y
         });
         
+        // Defensive lateral quickness matters — better defenders stay tighter
+        const perimD = defender.player.skills.defense?.perimeter_d || 70;
+        const gap = 4 - (perimD / 100) * 1.5; // elite=2.5ft, avg=3.5ft
+        
         defender.targetPos = {
-          x: assignedOffPlayer.pos.x + basketDir.x * 2,
-          y: assignedOffPlayer.pos.y + basketDir.y * 2
+          x: assignedOffPlayer.pos.x + basketDir.x * gap,
+          y: assignedOffPlayer.pos.y + basketDir.y * gap
         };
         defender.isDefensiveSliding = true;
       } else {
@@ -843,6 +871,15 @@ function handleHelpDefense(state: GameState): void {
 // 7. INTELLIGENT BASKETBALL FUNCTIONS (SYSTEM 2 & 3)
 // ══════════════════════════════════════════════════════════════════════════
 
+function isDefenderBetween(handler: SimPlayer, defender: SimPlayer, basket: Vec2): boolean {
+  // Is the defender between the handler and the basket?
+  const hToB = dist(handler.pos, basket);
+  const dToB = dist(defender.pos, basket);
+  const hToD = dist(handler.pos, defender.pos);
+  // Defender is "between" if they're closer to basket AND close to the line
+  return dToB < hToB && hToD < hToB * 0.7;
+}
+
 function checkIfWideOpen(player: SimPlayer, state: GameState): boolean {
   const defender = findNearestDefender(player, state);
   return !defender || dist(defender.pos, player.pos) > 8;
@@ -889,6 +926,9 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   const isWideOpen = checkIfWideOpen(handler, state); // defender > 8ft
   const openTeammates = getOpenTeammates(state, handler);
   
+  // Too many passes — stop passing, just attack
+  const tooManyPasses = state.passCount > 5;
+  
   // 1. Layup/dunk range — always finish
   if (distToBasket < 5) {
     attemptShot(state, handler, basketPos);
@@ -898,64 +938,69 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 2. Wide open 3-pointer — take it immediately
   if (isWideOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
-    if (three >= 70 || state.rng() < 0.7) { // decent shooter or 70% chance anyway
+    if (three >= 70 || state.rng() < 0.7) {
       attemptShot(state, handler, basketPos);
       return;
     }
   }
   
-  // 3. Open mid-range — good shot
+  // 3. DRIVE TO BASKET if lane is open — layups/dunks > mid-range shots
+  const defAhead = findNearestDefender(handler, state);
+  const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
+  const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
+  const laneClear = defDist > 4 || !defBetween;
+  
+  if (laneClear && distToBasket > 5 && distToBasket < 28) {
+    // Attack the basket — always prefer driving over pull-up jumper
+    const dir = state.possession === 0 ? 1 : -1;
+    const driveAngle = state.rng() > 0.5 ? 2 : -2;
+    handler.targetPos = {
+      x: basketPos.x - dir * 1,
+      y: basketPos.y + driveAngle,
+    };
+    handler.isCutting = true; // sprint to basket
+    return;
+  }
+  
+  // 4. Open mid-range — only if can't drive
   if (isOpen && distToBasket < 22 && distToBasket > 5) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 4. Drive to basket if lane is open
-  const defAhead = findNearestDefender(handler, state);
-  const laneClear = !defAhead || dist(defAhead.pos, handler.pos) > 5;
-  if (laneClear && distToBasket > 5 && distToBasket < 25) {
-    // Attack the basket
-    const dir = state.possession === 0 ? 1 : -1;
-    const driveAngle = state.rng() > 0.5 ? 3 : -3; // pick a side
-    handler.targetPos = {
-      x: basketPos.x - dir * 2,
-      y: basketPos.y + driveAngle,
-    };
-    return;
+  // 5. Kick out to open teammate (but not if we've passed too much already)
+  if (!tooManyPasses) {
+    const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
+    if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
+      passBall(state, handler, roller);
+      return;
+    }
+    
+    const openThreeShooter = openTeammates.find(p => {
+      const d = dist(p.pos, basketPos);
+      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 70;
+    });
+    if (openThreeShooter) {
+      passBall(state, handler, openThreeShooter);
+      return;
+    }
+    
+    if (openTeammates.length > 0) {
+      const closest = openTeammates.sort((a, b) => dist(a.pos, handler.pos) - dist(b.pos, handler.pos));
+      passBall(state, handler, closest[0]);
+      return;
+    }
   }
   
-  // 5. Kick out to open teammate
-  // Prioritize: roller near basket > open 3pt shooter > any open teammate
-  const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
-  if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
-    passBall(state, handler, roller);
-    return;
-  }
-  
-  const openThreeShooter = openTeammates.find(p => {
-    const d = dist(p.pos, basketPos);
-    return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 70;
-  });
-  if (openThreeShooter) {
-    passBall(state, handler, openThreeShooter);
-    return;
-  }
-  
-  if (openTeammates.length > 0) {
-    // Pass to closest open teammate
-    const closest = openTeammates.sort((a, b) => dist(a.pos, handler.pos) - dist(b.pos, handler.pos));
-    passBall(state, handler, closest[0]);
-    return;
-  }
-  
-  // 6. Contested shot — last resort
-  if (distToBasket < 22) {
+  // 6. Must score — too many passes or no options. Take the shot.
+  if (distToBasket < 25) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 7. Nothing else — dribble toward basket
-  handler.targetPos = { x: basketPos.x, y: basketPos.y + (state.rng() - 0.5) * 6 };
+  // 7. Nothing else — dribble toward basket and attack
+  handler.targetPos = { x: basketPos.x, y: basketPos.y + (state.rng() - 0.5) * 4 };
+  handler.isCutting = true;
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -967,8 +1012,8 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
   const candidates = offTeam.filter(p => {
     if (p === ballHandler) return false;
     
-    // Anti-ping-pong: don't pass back to recent passer
-    if (state.lastPassFrom === p.id && state.gameTime - state.lastPassTime < 3) return false;
+    // Anti-ping-pong: don't pass to anyone who touched ball in last 3 passes
+    if (state.passHistory.slice(-3).includes(p.id)) return false;
     
     // Check if pass lane is blocked
     if (isPassLaneBlocked(ballHandler, p, state)) return false;
@@ -1076,6 +1121,13 @@ function tick(state: GameState): GameState {
     }
   }
 
+  // Update catch timers
+  for (const p of state.players) {
+    if (p.catchTimer > 0) {
+      p.catchTimer = Math.max(0, p.catchTimer - dt);
+    }
+  }
+
   // Handle ball in flight
   if (state.ball.inFlight) {
     updateBallFlight(state, dt);
@@ -1178,6 +1230,7 @@ function tick(state: GameState): GameState {
     p.isDefensiveSliding = false;
     p.isCutting = false;
     p.isScreening = false;
+    if (!p.hasBall) p.isDribbling = false;
   }
 
   // Ball follows carrier
@@ -1376,6 +1429,12 @@ function handleSetup(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[
 function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[], basketPos: Vec2, dir: number): void {
   const handler = getBallHandler(state);
   if (!handler) return;
+  
+  // Can't act while catching the ball
+  if (handler.catchTimer > 0) return;
+  
+  // Set dribble state
+  handler.isDribbling = true;
   
   // Update possession stage
   state.possessionStage = getPossessionStage(state.shotClock);
@@ -1817,20 +1876,43 @@ function movePlayerToward(player: SimPlayer, dt: number, state: GameState): void
     return;
   }
   
-  // Calculate speed — NBA players sprint ~22 ft/s, jog ~12 ft/s
-  let baseSpeed = (player.player.physical.speed / 100) * 18 * (1 - player.fatigue * 0.3);
+  // Speed with meaningful attribute differences
+  // Speed 60 = 10 ft/s, Speed 80 = 16 ft/s, Speed 95 = 21 ft/s
+  const speedAttr = player.player.physical.speed;
+  const rawSpeed = 4 + (speedAttr / 100) * 18; // range: 4-22 ft/s
+  let baseSpeed = rawSpeed * (1 - player.fatigue * 0.3);
   
-  if (player.isDefensiveSliding) baseSpeed *= 0.65;
-  if (player.isCutting) baseSpeed *= 1.15;
-  if (player.hasBall) baseSpeed *= 0.85;
+  // Movement state modifiers
+  if (player.isDefensiveSliding) {
+    // Lateral defense: perimeter_d skill affects slide speed
+    const perimD = player.player.skills.defense?.perimeter_d || 70;
+    baseSpeed *= 0.6 + (perimD / 100) * 0.2; // range: 0.6 (bad) to 0.8 (elite)
+  }
+  if (player.isCutting) baseSpeed *= 1.2;
+  if (player.isDribbling) baseSpeed *= 0.8;          // dribbling slows you down
+  if (player.catchTimer > 0) baseSpeed *= 0.3;       // catching the ball — nearly stationary
   
-  // Jog when far from target (transition), sprint when close (halfcourt)
-  if (d > 30) baseSpeed *= 1.1; // sprint in transition
+  // Sprint/jog: far = sprint, close = controlled
+  if (d > 25) {
+    baseSpeed *= 1.15; // full sprint in transition
+    player.sprintTimer += dt;
+  } else if (d < 5) {
+    baseSpeed *= 0.7; // controlled near destination
+    player.sprintTimer = Math.max(0, player.sprintTimer - dt * 2);
+  } else {
+    player.sprintTimer = Math.max(0, player.sprintTimer - dt);
+  }
   
-  const accel = (player.player.physical.acceleration / 100) * 15;
+  // Sprint fatigue: can't sprint forever (decays after ~4 sec continuous sprint)
+  if (player.sprintTimer > 4) {
+    baseSpeed *= 0.85;
+  }
+  
+  const accelAttr = player.player.physical.acceleration;
+  const accel = 5 + (accelAttr / 100) * 15; // range: 5-20
   const targetVx = (dx / d) * baseSpeed;
   const targetVy = (dy / d) * baseSpeed;
-  const blend = Math.min(1, accel * dt * 0.35);
+  const blend = Math.min(1, accel * dt * 0.4);
   
   player.vel.x += (targetVx - player.vel.x) * blend;
   player.vel.y += (targetVy - player.vel.y) * blend;
@@ -1967,6 +2049,10 @@ function updateBallFlight(state: GameState, dt: number): void {
         if (closest) {
           clearBallCarrier(state);
           closest.hasBall = true;
+          closest.isDribbling = true;
+          // Catch delay: 0.3-0.6s depending on ball handling skill
+          const handling = closest.player.skills.playmaking?.ball_handling || 70;
+          closest.catchTimer = 0.6 - (handling / 100) * 0.3; // elite=0.3s, avg=0.4s
           state.ball.carrier = closest;
         }
       }
@@ -2217,6 +2303,9 @@ function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void {
   
   state.lastPassFrom = from.id;
   state.lastPassTime = state.gameTime;
+  state.passHistory.push(from.id);
+  if (state.passHistory.length > 6) state.passHistory.shift();
+  state.passCount++;
   state.lastEvent = `${from.player.name} ${passType} pass to ${to.player.name}`;
 }
 
@@ -2240,6 +2329,8 @@ function resetPossession(state: GameState): void {
   state.advanceClock = 0;
   state.lastPassFrom = null;
   state.lastPassTime = 0;
+  state.passHistory = [];
+  state.passCount = 0;
   state.possessionStage = 'early';
   state.playCompleted = false;
   
@@ -2250,6 +2341,9 @@ function resetPossession(state: GameState): void {
     p.isDefensiveSliding = false;
     p.isCutting = false;
     p.isScreening = false;
+    p.isDribbling = false;
+    p.catchTimer = 0;
+    p.sprintTimer = 0;
   });
   
   const offTeam = state.players.filter(p => p.teamIdx === state.possession);
@@ -2302,6 +2396,9 @@ function initGameState(): GameState {
         isDefensiveSliding: false,
         isCutting: false,
         isScreening: false,
+        isDribbling: false,
+        catchTimer: 0,
+        sprintTimer: 0,
       });
     });
   };
@@ -2363,6 +2460,8 @@ function initGameState(): GameState {
     stepTimer: 0,
     lastPassFrom: null,
     lastPassTime: 0,
+    passHistory: [],
+    passCount: 0,
     crossedHalfCourt: false,
     advanceClock: 0,
     possessionStage: 'early',
