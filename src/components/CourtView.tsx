@@ -1848,7 +1848,17 @@ function updateCurrentPlay(state: GameState, basketPos: Vec2, dir: number): void
     shouldAdvance = true;
   } else if (currentStep.trigger === 'pass' && state.gameTime - state.lastPassTime < 0.5) {
     shouldAdvance = true;
-  } else if (currentStep.trigger === 'position' && currentStep.triggerCondition?.()) {
+  } else if (currentStep.trigger === 'position') {
+    if (currentStep.triggerCondition) {
+      shouldAdvance = currentStep.triggerCondition();
+    } else {
+      // No condition defined — fallback to time
+      shouldAdvance = state.stepTimer >= currentStep.duration;
+    }
+  }
+  
+  // Safety: no step should last more than 5 seconds
+  if (state.stepTimer >= 5) {
     shouldAdvance = true;
   }
   
@@ -1901,9 +1911,16 @@ function executeRoleAction(player: SimPlayer, action: RoleAction, state: GameSta
       } else if (action.direction === 'right') {
         driveTarget.y += 6;
       } else if (action.direction === 'baseline') {
-        driveTarget.x -= dir * 2;
+        // Drive straight to basket (fast break)
+        driveTarget = { ...basketPos };
       }
       player.targetPos = driveTarget;
+      player.isCutting = true; // sprint
+      
+      // Auto-shoot when arriving at basket during drive
+      if (player.hasBall && dist(player.pos, basketPos) < 5) {
+        attemptShot(state, player, basketPos);
+      }
       break;
     case 'roll':
       player.targetPos = {
