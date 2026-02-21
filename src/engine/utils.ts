@@ -20,11 +20,10 @@ export function skillToGrade(value: number): string {
 }
 
 export function skillModifier(value: number): number {
-  if (value >= 95) return 1.20;  // S — elite
-  if (value >= 85) return 1.10;  // A — star
-  if (value >= 75) return 1.00;  // B — solid starter
-  if (value >= 65) return 0.88;  // C — rotation player
-  return 0.75;                   // D — replacement level
+  // Continuous curve: skill 60 → 0.75, skill 80 → 1.00, skill 100 → 1.20
+  // Linear interpolation: 0.75 + (value - 60) * (0.45 / 40)
+  const clamped = Math.max(40, Math.min(100, value));
+  return 0.75 + (clamped - 60) * 0.01125;
 }
 
 export function formatTime(secondsRemaining: number): string {

@@ -47,9 +47,9 @@ function fatigueModifier(currentFatigue: number, stamina: number): number {
 
 function superstarBonus(player: Player, momentum: Record<string, number>): number {
   if (!player.isSuperstar) return 0;
-  // Superstars always get a baseline boost + takeover when hot
-  const base = 0.08;
-  const takeover = (momentum[player.id] || 0) >= 3 ? 0.12 : 0;
+  // Superstars get a small baseline boost + takeover when hot
+  const base = 0.05;
+  const takeover = (momentum[player.id] || 0) >= 3 ? 0.08 : 0;
   return base + takeover;
 }
 
@@ -73,10 +73,10 @@ function pickShooter(
   const players = offTeam.players;
 
   const weights = players.map(p => {
-    let w = 10;
+    let w = 15;  // Higher base = more balanced distribution
     const bonus = superstarBonus(p, momentum);
-    if (p.isSuperstar) w += 12;
-    if (p.isSuperstar && (momentum[p.id] || 0) >= 3) w += 15;
+    if (p.isSuperstar) w += 8;
+    if (p.isSuperstar && (momentum[p.id] || 0) >= 3) w += 10;
 
     switch (offTactic) {
       case 'shoot':
@@ -100,10 +100,12 @@ function pickShooter(
   let assister: Player | null = null;
   const potentialAssisters = players.filter(p => p.id !== shooter.id);
   if (rng() < 0.65) {
-    const aWeights = potentialAssisters.map(p => ({
-      item: p,
-      weight: (p.skills.playmaking.passing + p.skills.playmaking.court_vision) / 2,
-    }));
+    const aWeights = potentialAssisters.map(p => {
+      const passSkill = (p.skills.playmaking.passing + p.skills.playmaking.court_vision) / 2;
+      // PG/SG get assist bonus, centers much less likely to be the passer
+      const posBonus = p.position === 'PG' ? 2.5 : p.position === 'SG' ? 1.5 : p.position === 'SF' ? 1.0 : 0.5;
+      return { item: p, weight: passSkill * posBonus };
+    });
     assister = pickWeighted(aWeights, rng);
   }
 
@@ -112,12 +114,20 @@ function pickShooter(
     playType = rng() < 0.5 ? 'fastbreak_layup' : 'fastbreak_dunk';
   } else {
     const options: { item: string; weight: number }[] = [];
-    options.push({ item: 'three', weight: skillModifier(shooter.skills.shooting.three_point) * 40 });
-    options.push({ item: 'midrange', weight: skillModifier(shooter.skills.shooting.mid_range) * 30 });
+    // Position-aware shot selection: guards shoot 3s, bigs work inside
+    const isGuard = shooter.position === 'PG' || shooter.position === 'SG';
+    const isWing = shooter.position === 'SF';
+    const isBig = shooter.position === 'PF' || shooter.position === 'C';
+    // Modern NBA: ~35 3PA/game. Guards ~10-12, wings ~6-8, stretch bigs ~3-5
+    const threeTendency = isGuard ? 80 : isWing ? 60 : (shooter.skills.shooting.three_point >= 70 ? 30 : 10);
+    const postTendency = isBig ? 25 : 3;
+    const dunkTendency = shooter.physical.vertical > 70 ? 15 : 3;
+    options.push({ item: 'three', weight: skillModifier(shooter.skills.shooting.three_point) * threeTendency });
+    options.push({ item: 'midrange', weight: skillModifier(shooter.skills.shooting.mid_range) * (isGuard || isWing ? 25 : 12) });
     options.push({ item: 'layup', weight: skillModifier(shooter.skills.finishing.layup) * 25 });
-    options.push({ item: 'dunk', weight: skillModifier(shooter.skills.finishing.dunk) * (shooter.physical.vertical > 70 ? 15 : 5) });
-    options.push({ item: 'post', weight: skillModifier(shooter.skills.finishing.post_move) * (shooter.position === 'C' || shooter.position === 'PF' ? 20 : 5) });
-    options.push({ item: 'floater', weight: skillModifier(shooter.skills.finishing.floater) * 10 });
+    options.push({ item: 'dunk', weight: skillModifier(shooter.skills.finishing.dunk) * dunkTendency });
+    options.push({ item: 'post', weight: skillModifier(shooter.skills.finishing.post_move) * postTendency });
+    options.push({ item: 'floater', weight: skillModifier(shooter.skills.finishing.floater) * (isGuard ? 12 : 5) });
     playType = pickWeighted(options, rng);
   }
 
@@ -138,45 +148,55 @@ function resolveShot(
 
   switch (playType) {
     case 'three':
-      baseChance = 0.36; isThree = true;
+      baseChance = 0.38; isThree = true;
       baseChance *= skillModifier(shooter.skills.shooting.three_point); break;
     case 'midrange':
-      baseChance = 0.44;
+      baseChance = 0.46;
       baseChance *= skillModifier(shooter.skills.shooting.mid_range); break;
     case 'layup': case 'fastbreak_layup':
-      baseChance = 0.58;
+      baseChance = 0.62;
       baseChance *= skillModifier(shooter.skills.finishing.layup); break;
     case 'dunk': case 'fastbreak_dunk':
-      baseChance = 0.72;
+      baseChance = 0.75;
       baseChance *= skillModifier(shooter.skills.finishing.dunk); break;
     case 'post':
-      baseChance = 0.48;
+      baseChance = 0.50;
       baseChance *= skillModifier(shooter.skills.finishing.post_move); break;
     case 'floater':
-      baseChance = 0.44;
+      baseChance = 0.46;
       baseChance *= skillModifier(shooter.skills.finishing.floater); break;
     default:
       baseChance = 0.44;
   }
 
-  // Defense reduces chance but less harshly
+  // Defense contest: always reduces shot chance (0.80-0.95 multiplier based on defender skill)
   const defSkill = isThree || playType === 'midrange'
-    ? skillModifier(defender.skills.defense.perimeter_d)
-    : skillModifier(defender.skills.defense.interior_d);
-  const contestMod = skillModifier(defender.skills.defense.shot_contest);
-  baseChance *= (1 - (defSkill * contestMod - 0.7) * 0.2);
+    ? defender.skills.defense.perimeter_d
+    : defender.skills.defense.interior_d;
+  const contestSkill = defender.skills.defense.shot_contest;
+  // defRating 60-100 → contestPenalty 0.02-0.10 (i.e. multiply by 0.90-0.98)
+  const contestPenalty = 0.02 + ((defSkill + contestSkill) / 2 - 60) * 0.002;
+  baseChance *= (1 - contestPenalty);
 
   baseChance *= (1 + tacticAdv);
   baseChance *= fatMod;
   baseChance *= (1 + sBonus);
-  if (playType.startsWith('fastbreak')) baseChance *= 1.15;
-  baseChance = Math.max(0.18, Math.min(0.72, baseChance));
+  if (playType.startsWith('fastbreak')) baseChance *= 1.12;
+  // Realistic caps: 3PT max ~46% (best shooters ~43%), 2PT max ~68%
+  const maxChance = isThree ? 0.46 : 0.68;
+  baseChance = Math.max(0.18, Math.min(maxChance, baseChance));
 
   const blockChance = skillModifier(defender.skills.defense.block) * 0.06 *
     (defender.physical.height > shooter.physical.height ? 1.2 : 0.8);
   if (rng() < blockChance) return { made: false, isThree, blocked: true };
 
   return { made: rng() < baseChance, isThree, blocked: false };
+}
+
+function reboundWeight(p: Player): number {
+  // Position matters hugely for rebounds: C >> PF >> SF >> SG >> PG
+  const posW = p.position === 'C' ? 3.0 : p.position === 'PF' ? 2.2 : p.position === 'SF' ? 1.2 : p.position === 'SG' ? 0.6 : 0.4;
+  return (p.skills.athletic.rebounding + p.physical.height / 3) * posW;
 }
 
 function getMatchupDefender(shooter: Player, defTeam: Team, rng: Rng): Player {
@@ -241,20 +261,27 @@ function simulatePossession(
   const bestStealer = defTeam.players.reduce((best, p) =>
     p.skills.defense.steal > best.skills.defense.steal ? p : best
   );
-  const stealChance = skillModifier(bestStealer.skills.defense.steal) * 0.04;
+  // Any defender can steal, not just the best one — pick weighted by steal skill
+  const stealAttempt = pickWeighted(defTeam.players.map(p => ({
+    item: p, weight: p.skills.defense.steal,
+  })), rng);
+  // NBA: ~7.5 steals/team/game (~100 possessions = ~7.5%)
+  const stealChance = skillModifier(stealAttempt.skills.defense.steal) * 0.10
+    - skillModifier(ballHandler.skills.playmaking.ball_handling) * 0.015;
 
-  if (rng() < stealChance) {
-    getStat(defStats, bestStealer.id).steals += 1;
+  if (rng() < Math.max(0.05, stealChance)) {
+    getStat(defStats, stealAttempt.id).steals += 1;
     getStat(offStats, ballHandler.id).turnovers += 1;
     addPBP(state, quarter, timeStr,
-      `${bestStealer.name} picks ${ballHandler.name.split(' ').pop()}'s pocket! Turnover!`,
-      defTeam.color, bestStealer.name);
+      `${stealAttempt.name} picks ${ballHandler.name.split(' ').pop()}'s pocket! Turnover!`,
+      defTeam.color, stealAttempt.name);
     return { pointsScored: 0, possessionTime: Math.min(possTime, 6) };
   }
 
-  // --- Turnover check ---
-  const turnoverChance = 0.09 - skillModifier(ballHandler.skills.playmaking.ball_handling) * 0.02
-    + (offTactic === 'fast_break' ? 0.01 : 0);
+  // --- Turnover check (non-steal: bad passes, travels, offensive fouls, out-of-bounds, etc.) ---
+  // NBA teams average ~6-7 non-steal turnovers per game (~100 possessions)
+  const turnoverChance = 0.065
+    + (offTactic === 'fast_break' ? 0.02 : 0);
 
   if (rng() < turnoverChance) {
     const handler = pickWeighted(offTeam.players.map(p => ({
@@ -264,6 +291,37 @@ function simulatePossession(
     const texts = [`${handler.name} loses the handle. Turnover.`, `Bad pass by ${handler.name}. Turnover.`, `${handler.name} steps out of bounds. Turnover.`];
     addPBP(state, quarter, timeStr, texts[Math.floor(rng() * texts.length)], teamColor, handler.name);
     return { pointsScored: 0, possessionTime: possTime };
+  }
+
+  // --- Non-shooting foul check (loose ball, off-ball, reaching) ---
+  if (rng() < 0.08) {
+    const fouler = defTeam.players[Math.floor(rng() * defTeam.players.length)];
+    getStat(defStats, fouler.id).fouls += 1;
+    const foulTexts = [
+      `${fouler.name} called for an off-ball foul.`,
+      `Reaching foul on ${fouler.name}.`,
+      `Loose ball foul on ${fouler.name}.`,
+    ];
+    addPBP(state, quarter, timeStr, foulTexts[Math.floor(rng() * foulTexts.length)], defTeam.color, fouler.name);
+    // Non-shooting foul in bonus = 2 FTs (simplified: assume in bonus 40% of time)
+    if (rng() < 0.40) {
+      const ftShooter = pickWeighted(offTeam.players.map(p => ({
+        item: p, weight: p.skills.shooting.free_throw + (p.isSuperstar ? 20 : 0),
+      })), rng);
+      const ftStats = getStat(offStats, ftShooter.id);
+      let ftPts = 0;
+      for (let i = 0; i < 2; i++) {
+        ftStats.ftAttempted += 1;
+        if (rng() < 0.55 + skillModifier(ftShooter.skills.shooting.free_throw) * 0.25) {
+          ftStats.ftMade += 1; ftStats.points += 1; ftPts += 1;
+        }
+      }
+      addPoints(state, isHome, ftPts);
+      addPBP(state, quarter, timeStr,
+        `${ftShooter.name} goes ${ftPts}-2 from the line.`, teamColor, ftShooter.name);
+      return { pointsScored: ftPts, possessionTime: possTime };
+    }
+    // Non-bonus: side out, same team keeps ball — just continue to shot
   }
 
   // --- Shot attempt ---
@@ -304,8 +362,8 @@ function simulatePossession(
     const res = resultText(true, false, isThree, playType, rng);
     addPBP(state, quarter, timeStr, `${prefix} ${desc}... ${res}`, teamColor, shooter.name);
 
-    // And-1 chance (8% on drives/dunks/inside, 3% on jumpers)
-    const andOneChance = ['layup', 'dunk', 'post', 'fastbreak_layup', 'fastbreak_dunk'].includes(playType) ? 0.08 : 0.03;
+    // And-1 chance (12% on drives/dunks/inside, 4% on jumpers)
+    const andOneChance = ['layup', 'dunk', 'post', 'fastbreak_layup', 'fastbreak_dunk'].includes(playType) ? 0.12 : 0.04;
     if (rng() < andOneChance) {
       getStat(defStats, defender.id).fouls += 1;
       shooterStats.ftAttempted += 1;
@@ -328,8 +386,9 @@ function simulatePossession(
     const desc = shotDescription(playType, rng);
     const res = resultText(false, blocked, isThree, playType, rng);
 
-    // Shooting foul check (15% of non-blocked misses)
-    if (!blocked && rng() < 0.15) {
+    // Shooting foul check (22% of non-blocked misses — drives get fouled more)
+    const foulRate = ['layup', 'dunk', 'post', 'fastbreak_layup', 'fastbreak_dunk'].includes(playType) ? 0.28 : 0.15;
+    if (!blocked && rng() < foulRate) {
       getStat(defStats, defender.id).fouls += 1;
       const ftCount = isThree ? 3 : 2;
       const ftMod = skillModifier(shooter.skills.shooting.free_throw);
@@ -358,7 +417,7 @@ function simulatePossession(
     if (isOffRebound) {
       const rebounder = pickWeighted(offTeam.players.map(p => ({
         item: p,
-        weight: p.skills.athletic.rebounding + p.physical.height / 5 + (p.skills.defense.box_out * 0.3),
+        weight: reboundWeight(p),
       })), rng);
       const rebStats = getStat(offStats, rebounder.id);
       rebStats.rebounds += 1;
@@ -390,7 +449,7 @@ function simulatePossession(
         // Second chance also missed — defensive rebound
         const defRebounder = pickWeighted(defTeam.players.map(p => ({
           item: p,
-          weight: p.skills.athletic.rebounding + p.physical.height / 5 + (p.skills.defense.box_out * 0.3),
+          weight: reboundWeight(p),
         })), rng);
         const defRebStats = getStat(defStats, defRebounder.id);
         defRebStats.rebounds += 1;
@@ -406,7 +465,7 @@ function simulatePossession(
       // Defensive rebound
       const rebounder = pickWeighted(defTeam.players.map(p => ({
         item: p,
-        weight: p.skills.athletic.rebounding + p.physical.height / 5 + (p.skills.defense.box_out * 0.3),
+        weight: reboundWeight(p),
       })), rng);
       const rebStats = getStat(defStats, rebounder.id);
       rebStats.rebounds += 1;
