@@ -165,6 +165,7 @@ interface GameState {
   possessionStage: PossessionStage;  // current stage
   playCompleted: boolean;  // has the primary play finished?
   freeThrows: { shooter: SimPlayer; made: number; total: number; andOne: boolean } | null;
+  hasFastBroken: boolean;  // has this possession already triggered a fast break?
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -191,14 +192,36 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
   const handler = getBallHandler(state);
   if (!handler) return;
   
-  // Don't override play actions
-  if (state.currentPlay) return;
-  
   const slots = getSlotPositions(basketPos, dir);
   
   for (const player of offTeam) {
     if (player === handler) continue;
     if (player.isScreening || player.isCutting) continue;
+    
+    // During plays, only do subtle drift (don't override play actions)
+    if (state.currentPlay) {
+      // Subtle: if player is idle (at target or no target), drift toward best spacing
+      const atTarget = !player.targetPos || dist(player.pos, player.targetPos) < 1;
+      if (atTarget && state.phaseTicks % 60 === (player.courtIdx * 17) % 60) {
+        // Drift to maintain spacing — find the most open area nearby
+        const teammates = offTeam.filter(p => p !== player && p !== handler);
+        let bestDrift = player.pos;
+        let bestMinDist = 0;
+        for (let attempt = 0; attempt < 4; attempt++) {
+          const candidate = {
+            x: player.pos.x + (state.rng() - 0.5) * 6,
+            y: Math.max(2, Math.min(48, player.pos.y + (state.rng() - 0.5) * 6))
+          };
+          const minTeammateDist = Math.min(...teammates.map(t => dist(t.pos, candidate)), 50);
+          if (minTeammateDist > bestMinDist) {
+            bestMinDist = minTeammateDist;
+            bestDrift = candidate;
+          }
+        }
+        if (bestMinDist > 4) player.targetPos = bestDrift;
+      }
+      continue;
+    }
     
     // Each player checks for movement every ~1.5 seconds, staggered
     const moveHash = (state.phaseTicks + player.courtIdx * 37) % 90;
@@ -605,17 +628,27 @@ const PLAYBOOK: PlayDef[] = [
 function assignRoles(state: GameState): void {
   // Don't reassign roles while a play is running — play needs stable role assignments
   if (state.currentPlay && state.roles.size > 0) {
-    // Only update ballHandler role to track who has the ball
-    const ballHandler = getBallHandler(state);
-    if (ballHandler && !state.roles.has(ballHandler.id)) {
-      // Ball was passed — new handler gets ballHandler role, old handler keeps their role
-      const oldHandler = [...state.roles.entries()].find(([_, r]) => r === 'ballHandler');
-      if (oldHandler) {
-        // Give old handler the new handler's old role (or spacer)
-        const newHandlerOldRole = state.roles.get(ballHandler.id) || 'spacer';
-        state.roles.set(oldHandler[0], newHandlerOldRole);
+    // Track who has the ball, but PG keeps ballHandler role conceptually
+    const carrier = getBallHandler(state);
+    if (carrier) {
+      const currentBHEntry = [...state.roles.entries()].find(([_, r]) => r === 'ballHandler');
+      const currentBHId = currentBHEntry?.[0];
+      
+      if (currentBHId && currentBHId !== carrier.id) {
+        // Ball was passed. Check if current ballHandler is PG
+        const currentBH = state.players.find(p => p.id === currentBHId);
+        const isPG = currentBH?.player.position === 'PG';
+        
+        if (isPG) {
+          // PG passed the ball — PG keeps ballHandler role (will get ball back or run point)
+          // Don't reassign roles at all, let the play step actions drive movement
+        } else {
+          // Non-PG passed — swap roles as before
+          const newHandlerOldRole = state.roles.get(carrier.id) || 'spacer';
+          state.roles.set(currentBHId, newHandlerOldRole);
+          state.roles.set(carrier.id, 'ballHandler');
+        }
       }
-      state.roles.set(ballHandler.id, 'ballHandler');
     }
     // Update player references
     state.players.forEach(p => { p.currentRole = state.roles.get(p.id); });
@@ -1452,11 +1485,22 @@ function tick(state: GameState): GameState {
     movePlayerToward(p, dt, state);
   }
   
-  // Reset per-frame flags AFTER movement (so next tick's phase handlers set them fresh)
+  // Reset per-frame flags AFTER movement
+  // NOTE: Only reset cutting/screening if the player has REACHED their target.
+  // Otherwise the flag gets cleared mid-movement and the player stops moving.
   for (const p of state.players) {
     p.isDefensiveSliding = false;
-    p.isCutting = false;
-    p.isScreening = false;
+    if (p.targetPos) {
+      const atTarget = dist(p.pos, p.targetPos) < 1.5;
+      if (atTarget) {
+        p.isCutting = false;
+        p.isScreening = false;
+      }
+      // Keep isCutting/isScreening if still moving toward target
+    } else {
+      p.isCutting = false;
+      p.isScreening = false;
+    }
     if (!p.hasBall) { p.isDribbling = false; p.isDriving = false; }
   }
 
@@ -1628,14 +1672,26 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Check if advanced enough (ball handler past half court + 8ft)
   if (Math.abs(handler.pos.x - HALF_X) > 8) {
-    // Fast break detection: if most defenders haven't crossed half court, skip setup
+    // Fast break detection: only when defense is out of position AND in action phase (not inbound)
+    // NBA ~15-20% transition — fast break requires defenders well behind
     const defPastHalf = defTeam.filter(d => {
       return state.possession === 0 
         ? d.pos.x > HALF_X + 5  // team 0 attacks right — tighter check
         : d.pos.x < HALF_X - 5; // team 1 attacks left — tighter check
     }).length;
     
-    if (defPastHalf <= 1) { // Was <= 2, too easy to trigger. NBA ~15-20% transition
+    // NBA: fast break happens when defense is >15ft from half (deep behind)
+    // This is more restrictive than "no defenders back"
+    const defDeepBehind = defTeam.filter(d => {
+      return state.possession === 0 
+        ? d.pos.x > HALF_X + 15
+        : d.pos.x < HALF_X - 15;
+    }).length;
+    
+    // Fast break only if: 3+ defenders deep behind (meaning none settled)
+    // AND ball handler has advanced significantly (not just crossed half court)
+    // AND this possession hasn't already been marked as fast break
+    if (defDeepBehind >= 3 && !state.hasFastBroken && state.phaseTicks < 30) {
       // Fast break! Count advantage
       const offPastHalf = offTeam.filter(p => {
         return state.possession === 0
@@ -1646,12 +1702,13 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       state.phase = 'action';
       state.phaseTicks = 0;
       state.advanceClock = 0;
+      state.hasFastBroken = true;
       
-      if (defPastHalf === 0 && offPastHalf >= 1) {
-        // Uncontested — just attack the rim
+      if (offPastHalf >= 3) {
+        // 3+ offensive players in front — uncontested break
         state.currentPlay = PLAY_CHERRY_PICK;
         state.lastEvent = `Breakaway! ${handler.player.name} is all alone!`;
-      } else if (offPastHalf >= defPastHalf + 2) {
+      } else if (offPastHalf >= defTeam.length - defDeepBehind + 2) {
         // 3v1 or 4v2 — use secondary break with passing
         state.currentPlay = PLAY_SECONDARY_BREAK;
         state.lastEvent = `Fast break! ${offPastHalf}v${defPastHalf}!`;
@@ -2979,6 +3036,7 @@ function resetPossession(state: GameState): void {
   state.dribbleTime = 0;
   state.possessionStage = 'early';
   state.playCompleted = false;
+  state.hasFastBroken = false;
   
   // Reset player states
   state.players.forEach(p => {
@@ -3114,6 +3172,7 @@ function initGameState(): GameState {
     advanceClock: 0,
     possessionStage: 'early',
     playCompleted: false,
+    hasFastBroken: false,
     freeThrows: null,
   };
 }

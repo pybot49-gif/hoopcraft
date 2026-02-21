@@ -107,6 +107,7 @@ const report = await page.evaluate(() => {
   const lastPos = new Map();
   const playCount = {};
   let totalPlays = 0;
+  let lastPlay = null;
 
   for (let i = 0; i < ticks.length; i++) {
     const t = ticks[i];
@@ -115,11 +116,12 @@ const report = await page.evaluate(() => {
     // Deduplicated event counting
     if (t.event !== lastEvent) {
       if (t.event?.includes('Fast break') || t.event?.includes('Breakaway')) fastBreaks++;
-      if (t.event?.includes('Running:')) {
+      // Count play changes (new play name different from previous)
+      if (t.play && t.play !== lastPlay) {
         totalPlays++;
-        const playName = t.play || 'unknown';
-        playCount[playName] = (playCount[playName] || 0) + 1;
+        playCount[t.play] = (playCount[t.play] || 0) + 1;
       }
+      lastPlay = t.play || null;
       lastEvent = t.event;
     }
 
