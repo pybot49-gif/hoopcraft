@@ -1253,10 +1253,37 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
 // 9. TICK/SIMULATION LOGIC
 // ══════════════════════════════════════════════════════════════════════════
 
+// ══════════════════════════════════════════════════════════════════════════
+// ANALYSIS DATA COLLECTION
+// ══════════════════════════════════════════════════════════════════════════
+// Exposes window.__hoopcraft_ticks (tick log) and window.__hoopcraft_analyze()
+// Used by scripts/analyze.mjs (Playwright) for automated game analysis.
+
+interface TickSnapshot {
+  t: number; phase: string; possession: number; shotClock: number;
+  players: { id: string; name: string; pos: string; x: number; y: number; hasBall: boolean; role?: string; teamIdx: number }[];
+  event?: string; play?: string;
+}
+const _tickLog: TickSnapshot[] = [];
+(window as unknown as Record<string, unknown>).__hoopcraft_ticks = _tickLog;
+
 function tick(state: GameState): GameState {
   const dt = 1 / 60; // 1 tick = 1/60th of a second (matches requestAnimationFrame)
   state.phaseTicks++;
   state.gameTime += dt;
+
+  // Collect tick data for analysis (cap at 200K ticks ≈ 55min game time)
+  if (_tickLog.length < 200000) {
+    _tickLog.push({
+      t: state.gameTime, phase: state.phase, possession: state.possession, shotClock: state.shotClock,
+      players: state.players.map(p => ({
+        id: p.id, name: p.player.name, pos: p.player.position,
+        x: Math.round(p.pos.x * 10) / 10, y: Math.round(p.pos.y * 10) / 10,
+        hasBall: p.hasBall, role: p.currentRole, teamIdx: p.teamIdx,
+      })),
+      event: state.lastEvent, play: state.currentPlay?.name,
+    });
+  }
 
   // Update clocks
   if (state.phase !== 'jumpball' && state.gameStarted) {
