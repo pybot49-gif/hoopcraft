@@ -66,9 +66,15 @@ for (const text of ['Court', 'Court View', '🏟️ Court View']) {
 await page.waitForTimeout(500);
 
 // Max speed
-for (const text of ['8x', '4x']) {
-  const btn = await page.$(`button:has-text("${text}")`);
-  if (btn && await btn.isVisible()) { await btn.click(); console.log(`Speed: ${text}`); break; }
+const maxBtn = await page.$('button:has-text("Max")');
+if (maxBtn && await maxBtn.isVisible()) {
+  await maxBtn.click();
+  console.log('Speed: Max (CPU-bound)');
+} else {
+  for (const text of ['4x']) {
+    const btn = await page.$(`button:has-text("${text}")`);
+    if (btn && await btn.isVisible()) { await btn.click(); console.log(`Speed: ${text}`); break; }
+  }
 }
 await page.waitForTimeout(300);
 
@@ -79,18 +85,21 @@ for (const text of ['Start', 'Play', '▶']) {
 }
 
 // ── Wait for game to finish ────────────────────────────────────────────
-console.log('Running game (this takes ~3-4 minutes at 4x speed)...');
+console.log('Running game (Max speed — should finish in ~10-30 seconds)...');
 const startTime = Date.now();
 for (let i = 0; i < 300; i++) {
-  await page.waitForTimeout(1000);
+  await page.waitForTimeout(500);
   const tc = await page.evaluate(() => (window).__hoopcraft_ticks?.length || 0);
-  if (i % 30 === 0) {
-    const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+  const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+  if (i % 10 === 0) {
     console.log(`  ${elapsed}s elapsed — ${tc} ticks (${(tc / 60).toFixed(0)}s game time)`);
   }
   const done = await page.evaluate(() => document.body.innerText.includes('FINAL'));
-  if (done && tc > 5000) break;
+  // 48 min = 2880s × 60 ticks/s = 172800 ticks. Use 170000 as fallback.
+  if ((done && tc > 5000) || tc >= 170000) break;
 }
+const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+console.log(`Game completed in ${totalElapsed}s wall time`);
 
 // ── Analyze ────────────────────────────────────────────────────────────
 const report = await page.evaluate(() => {

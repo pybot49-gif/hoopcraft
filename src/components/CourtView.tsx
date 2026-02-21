@@ -3713,6 +3713,7 @@ export function CourtView() {
   const [, forceUpdate] = useState(0);
   const [running, setRunning] = useState(false);
   const [speed, setSpeed] = useState(1);
+  const [maxSpeed, setMaxSpeed] = useState(false);
   const [homeTacticO, setHomeTacticO] = useState<OffenseTactic>('motion');
   const [homeTacticD, setHomeTacticD] = useState<DefenseTactic>('man');
   const [awayTacticO, setAwayTacticO] = useState<OffenseTactic>('motion');
@@ -3742,28 +3743,50 @@ export function CourtView() {
     let lastTime = 0;
     let accumulator = 0;
     const TICK_MS = 1000 / 60;
+    let frameCount = 0;
 
     const loop = (time: number) => {
       if (lastTime === 0) lastTime = time;
-      const delta = (time - lastTime) * speed;
-      lastTime = time;
 
       if (running && (stateRef.current.clockSeconds > 0 || !stateRef.current.gameStarted)) {
-        accumulator += delta;
-        while (accumulator >= TICK_MS) {
-          tick(stateRef.current);
-          accumulator -= TICK_MS;
+        if (maxSpeed) {
+          // Max speed: run as many ticks as CPU allows per frame (~2000)
+          // Only draw every 30 frames to keep browser responsive
+          const TICKS_PER_FRAME = 2000;
+          let gameEnded = false;
+          for (let i = 0; i < TICKS_PER_FRAME; i++) {
+            tick(stateRef.current);
+            if (stateRef.current.clockSeconds <= 0 && stateRef.current.gameStarted) {
+              gameEnded = true;
+              break;
+            }
+          }
+          frameCount++;
+          if (frameCount % 30 === 0 || gameEnded) {
+            draw();
+            forceUpdate(n => n + 1);
+          }
+        } else {
+          const delta = (time - lastTime) * speed;
+          accumulator += delta;
+          while (accumulator >= TICK_MS) {
+            tick(stateRef.current);
+            accumulator -= TICK_MS;
+          }
+          forceUpdate(n => n + 1);
+          draw();
         }
-        forceUpdate(n => n + 1);
+      } else {
+        draw();
       }
 
-      draw();
+      lastTime = time;
       animRef.current = requestAnimationFrame(loop);
     };
 
     animRef.current = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animRef.current);
-  }, [running, speed, draw]);
+  }, [running, speed, maxSpeed, draw]);
 
   const handlePlayPause = () => setRunning(r => !r);
   const handleReset = () => {
@@ -3791,9 +3814,9 @@ export function CourtView() {
           {[0.5, 1, 2, 4].map(s => (
             <button
               key={s}
-              onClick={() => setSpeed(s)}
+              onClick={() => { setMaxSpeed(false); setSpeed(s); }}
               className={`px-2 py-1 rounded text-xs border transition-colors ${
-                speed === s
+                !maxSpeed && speed === s
                   ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-dim)]'
                   : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:border-[var(--color-accent)]'
               }`}
@@ -3801,6 +3824,16 @@ export function CourtView() {
               {s}x
             </button>
           ))}
+          <button
+            onClick={() => setMaxSpeed(m => !m)}
+            className={`px-2 py-1 rounded text-xs border transition-colors font-bold ${
+              maxSpeed
+                ? 'border-[var(--color-accent)] text-[var(--color-accent)] bg-[var(--color-accent-dim)]'
+                : 'border-[var(--color-border)] text-[var(--color-text-dim)] hover:border-[var(--color-accent)]'
+            }`}
+          >
+            Max
+          </button>
         </div>
         <button
           onClick={handleReset}
