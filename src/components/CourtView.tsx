@@ -1393,6 +1393,12 @@ function tick(state: GameState): GameState {
     });
   }
 
+  // Dead ball pause (after made baskets)
+  if (state.deadBallTimer > 0) {
+    state.deadBallTimer -= dt;
+    return state;
+  }
+
   // Update clocks
   if (state.phase !== 'jumpball' && state.gameStarted) {
     state.clockSeconds -= dt;
@@ -1419,12 +1425,6 @@ function tick(state: GameState): GameState {
       state.running = false;
       return state;
     }
-  }
-
-  // Dead ball pause (after made baskets)
-  if (state.deadBallTimer > 0) {
-    state.deadBallTimer -= dt;
-    return state;
   }
 
   // Sync safety: ensure hasBall and carrier are consistent
