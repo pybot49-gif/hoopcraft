@@ -313,200 +313,286 @@ function getPossessionStage(shotClock: number): PossessionStage {
 }
 
 // ══════════════════════════════════════════════════════════════════════════
-// 4. PLAYBOOK SYSTEM  
+// 4. PLAYBOOK SYSTEM — Real NBA set plays
 // ══════════════════════════════════════════════════════════════════════════
 
-function createPickAndRollRight(): Play {
-  const step1: PlayStep = {
-    id: 1,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-      ['screener', { type: 'screen', target: 'ballHandler' }],
-      ['spacer', { type: 'relocate' }],
-    ]),
-    trigger: 'time'
-  };
-  
-  const step2: PlayStep = {
-    id: 2,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'drive', direction: 'right' }],
-      ['screener', { type: 'roll' }],
-      ['spacer', { type: 'relocate' }],
-    ]),
-    trigger: 'time'
-  };
-  
-  const step3: PlayStep = {
-    id: 3,
-    duration: 3,
-    actions: new Map([
-      ['ballHandler', { type: 'readAndReact' }], // Smart decision based on defense
-      ['screener', { type: 'callForBall' }],     // Signal for pass if open
-      ['spacer', { type: 'hold' }],
-    ]),
-    trigger: 'time'
-  };
-  
+// 1. HORNS PnR — Two bigs at elbows, PG picks a side
+// Used by: Warriors, Nuggets, most modern NBA teams
+function createHornsPnR(): Play {
   return {
-    name: 'Pick and Roll (Right)',
-    steps: [step1, step2, step3]
+    name: 'Horns PnR',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'drive', direction: 'right' }],
+        ['screener', { type: 'screen', target: 'ballHandler' }],
+        ['postUp', { type: 'pop', slot: 'SLOT_LEFT_WING' }],  // weak side big pops
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'roll' }],
+        ['postUp', { type: 'callForBall' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+      ])},
+    ]
   };
 }
 
-function createMotionOffense(): Play {
-  const step1: PlayStep = {
-    id: 1,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-      ['spacer', { type: 'relocate' }],
-      ['cutter', { type: 'relocate' }],
-    ]),
-    trigger: 'time'
-  };
-  
-  const step2: PlayStep = {
-    id: 2,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'passTo', target: 'spacer' }], // Pass to wing
-      ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_RIGHT_CORNER' }],
-      ['screener', { type: 'screen', target: 'cutter' }],
-    ]),
-    trigger: 'pass'
-  };
-  
-  const step3: PlayStep = {
-    id: 3,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'readAndReact' }], // New handler (wing) reads defense
-      ['screener', { type: 'pop', slot: 'SLOT_LEFT_ELBOW' }],
-      ['cutter', { type: 'callForBall' }], // Cutter calls for ball from corner
-    ]),
-    trigger: 'time'
-  };
-  
-  const step4: PlayStep = {
-    id: 4,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'readAndReact' }], // Swing ball, read again
-      ['spacer', { type: 'hold' }],
-      ['screener', { type: 'hold' }],
-    ]),
-    trigger: 'time'
-  };
-  
+// 2. FLEX — Continuous screening action, great for ball movement
+// Used by: Classic college play, used at NBA level for catch-and-shoot
+function createFlex(): Play {
   return {
-    name: 'Motion Offense',
-    steps: [step1, step2, step3, step4]
+    name: 'Flex',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'passTo', target: 'spacer' }],  // swing to right wing
+        ['screener', { type: 'screen', target: 'cutter' }],     // flex screen on baseline
+        ['cutter', { type: 'cut', from: 'SLOT_RIGHT_CORNER', to: 'SLOT_LOW_POST_L' }], // baseline cut
+        ['postUp', { type: 'hold' }],
+        ['spacer', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'pop', slot: 'SLOT_RIGHT_ELBOW' }],  // pop after screen
+        ['cutter', { type: 'callForBall' }],
+        ['postUp', { type: 'relocate' }],
+        ['spacer', { type: 'hold' }],
+      ])},
+    ]
   };
 }
 
-function createIsoPlay(): Play {
-  const step1: PlayStep = {
-    id: 1,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
-      ['spacer', { type: 'relocate' }], // Clear out to opposite side
-    ]),
-    trigger: 'time'
-  };
-  
-  const step2: PlayStep = {
-    id: 2,
-    duration: 4,
-    actions: new Map([
-      ['ballHandler', { type: 'readAndReact' }], // 1v1: jab, drive, shoot, or kick out if double-teamed
-      ['spacer', { type: 'hold' }],
-    ]),
-    trigger: 'time'
-  };
-  
+// 3. UCLA CUT — PG passes to wing, cuts off high post screen to basket
+// Used by: Lakers (Showtime), many modern teams
+function createUCLACut(): Play {
   return {
-    name: 'ISO Clear',
-    steps: [step1, step2]
+    name: 'UCLA Cut',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],  // high post
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
+      ])},
+      { id: 2, duration: 1.5, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'passTo', target: 'spacer' }],     // pass to wing
+        ['screener', { type: 'screen', target: 'ballHandler' }],   // screen for PG
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LOW_POST_L' }], // UCLA cut to basket
+        ['screener', { type: 'pop', slot: 'SLOT_TOP_KEY' }],
+        ['spacer', { type: 'readAndReact' }],   // wing now has ball, reads
+        ['cutter', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+      { id: 4, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'callForBall' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'relocate' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+    ]
   };
 }
 
-function createPostUpPlay(): Play {
-  const step1: PlayStep = {
-    id: 1,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
-      ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_L' }],
-      ['spacer', { type: 'relocate' }],
-    ]),
-    trigger: 'time'
+// 4. SPAIN PnR — PnR with a backscreen on the roller's defender
+// Used by: Spain national team, Raptors, modern NBA innovation
+function createSpainPnR(): Play {
+  return {
+    name: 'Spain PnR',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'drive', direction: 'right' }],
+        ['screener', { type: 'screen', target: 'ballHandler' }],
+        ['cutter', { type: 'screen', target: 'screener' }],   // backscreen on roller's defender!
+        ['spacer', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'roll' }],          // rolls free because of backscreen
+        ['cutter', { type: 'pop', slot: 'SLOT_LEFT_WING' }],  // pops to 3pt line
+        ['spacer', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+    ]
   };
-  
-  const step2: PlayStep = {
-    id: 2,
-    duration: 2,
-    actions: new Map([
-      ['ballHandler', { type: 'entryPass', target: 'postUp' }], // Entry pass to post
-      ['postUp', { type: 'callForBall' }],
-      ['spacer', { type: 'hold' }],
-    ]),
-    trigger: 'pass'
+}
+
+// 5. FLOPPY — Shooter runs off staggered screens for catch-and-shoot
+// Used by: Warriors (Steph Curry), any team with elite shooters
+function createFloppy(): Play {
+  return {
+    name: 'Floppy',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_LOW_POST_L' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_R' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],  // shooter starts at FT line
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'hold' }],
+        ['screener', { type: 'screen', target: 'cutter' }],  // first screen
+        ['postUp', { type: 'screen', target: 'cutter' }],    // staggered second screen
+        ['cutter', { type: 'cut', from: 'SLOT_LEFT_ELBOW', to: 'SLOT_RIGHT_WING' }],  // run off screens
+        ['spacer', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'passTo', target: 'cutter' }],  // feed the shooter
+        ['screener', { type: 'roll' }],
+        ['postUp', { type: 'pop', slot: 'SLOT_RIGHT_ELBOW' }],
+        ['cutter', { type: 'shootIfOpen' }],
+        ['spacer', { type: 'hold' }],
+      ])},
+    ]
   };
-  
-  const step3: PlayStep = {
-    id: 3,
-    duration: 3,
-    actions: new Map([
-      ['postUp', { type: 'readAndReact' }], // Post moves (back down, hook shot, or kick out)
-      ['spacer', { type: 'hold' }],
-    ]),
-    trigger: 'time'
+}
+
+// 6. PICK AND ROLL (Side) — Classic side PnR
+function createSidePnR(): Play {
+  return {
+    name: 'Side PnR',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_RIGHT_ELBOW' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'drive', direction: 'left' }],
+        ['screener', { type: 'screen', target: 'ballHandler' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+        ['postUp', { type: 'relocate' }],
+      ])},
+      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'roll' }],
+        ['spacer', { type: 'callForBall' }],
+        ['cutter', { type: 'relocate' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+    ]
   };
-  
+}
+
+// 7. POST UP — Classic post entry
+function createPostUp(): Play {
   return {
     name: 'Post Up',
-    steps: [step1, step2, step3]
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LOW_POST_L' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_TOP_KEY' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_RIGHT_CORNER' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'entryPass', target: 'postUp' }],
+        ['postUp', { type: 'callForBall' }],
+        ['screener', { type: 'hold' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+      ])},
+      { id: 3, duration: 3, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['postUp', { type: 'readAndReact' }],
+        ['ballHandler', { type: 'relocate' }],
+        ['screener', { type: 'hold' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'relocate' }],
+      ])},
+    ]
   };
 }
 
+// 8. ISO CLEAR — Clear one side for 1-on-1
+function createISO(): Play {
+  return {
+    name: 'ISO Clear',
+    steps: [
+      { id: 1, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'moveTo', slot: 'SLOT_RIGHT_WING' }],
+        ['screener', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
+        ['spacer', { type: 'moveTo', slot: 'SLOT_LEFT_WING' }],
+        ['cutter', { type: 'moveTo', slot: 'SLOT_LEFT_ELBOW' }],
+        ['postUp', { type: 'moveTo', slot: 'SLOT_LEFT_CORNER' }],
+      ])},
+      { id: 2, duration: 4, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['screener', { type: 'hold' }],
+        ['spacer', { type: 'hold' }],
+        ['cutter', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+    ]
+  };
+}
+
+// 9. FAST BREAK — Push pace in transition
 function createFastBreak(): Play {
-  const step1: PlayStep = {
-    id: 1,
-    duration: 1.5,
-    actions: new Map([
-      ['ballHandler', { type: 'drive', direction: 'baseline' }], // Push pace at full speed
-      ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LEFT_CORNER' }],
-      ['spacer', { type: 'cut', from: 'SLOT_RIGHT_WING', to: 'SLOT_RIGHT_CORNER' }],
-    ]),
-    trigger: 'position'
-  };
-  
-  const step2: PlayStep = {
-    id: 2,
-    duration: 1.5,
-    actions: new Map([
-      ['ballHandler', { type: 'readAndReact' }], // If numbers advantage: layup. If not: pull up or kick to wing
-      ['cutter', { type: 'hold' }],
-      ['spacer', { type: 'hold' }],
-    ]),
-    trigger: 'time'
-  };
-  
   return {
     name: 'Fast Break',
-    steps: [step1, step2]
+    steps: [
+      { id: 1, duration: 1.5, trigger: 'position', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'drive', direction: 'baseline' }],
+        ['cutter', { type: 'cut', from: 'SLOT_LEFT_WING', to: 'SLOT_LEFT_CORNER' }],
+        ['spacer', { type: 'cut', from: 'SLOT_RIGHT_WING', to: 'SLOT_RIGHT_CORNER' }],
+        ['screener', { type: 'hold' }],
+        ['postUp', { type: 'hold' }],
+      ])},
+      { id: 2, duration: 2, trigger: 'time', actions: new Map<OffenseRole, RoleAction>([
+        ['ballHandler', { type: 'readAndReact' }],
+        ['cutter', { type: 'callForBall' }],
+        ['spacer', { type: 'callForBall' }],
+        ['screener', { type: 'relocate' }],
+        ['postUp', { type: 'relocate' }],
+      ])},
+    ]
   };
 }
 
 const PLAYBOOK: Play[] = [
-  createPickAndRollRight(),
-  createMotionOffense(),
-  createIsoPlay(),
-  createPostUpPlay(),
+  createHornsPnR(),
+  createFlex(),
+  createUCLACut(),
+  createSpainPnR(),
+  createFloppy(),
+  createSidePnR(),
+  createPostUp(),
+  createISO(),
   createFastBreak(),
 ];
 
@@ -801,59 +887,75 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   const distToBasket = dist(handler.pos, basketPos);
   const isOpen = checkIfOpen(handler, state);  // defender > 6ft
   const isWideOpen = checkIfWideOpen(handler, state); // defender > 8ft
+  const openTeammates = getOpenTeammates(state, handler);
   
-  // 1. Layup/dunk range
+  // 1. Layup/dunk range — always finish
   if (distToBasket < 5) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 2. Open and in range → shoot
-  if (isOpen && distToBasket < 22) {
+  // 2. Wide open 3-pointer — take it immediately
+  if (isWideOpen && distToBasket > 22 && distToBasket < 27) {
+    const three = handler.player.skills.shooting.three_point;
+    if (three >= 70 || state.rng() < 0.7) { // decent shooter or 70% chance anyway
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+  }
+  
+  // 3. Open mid-range — good shot
+  if (isOpen && distToBasket < 22 && distToBasket > 5) {
     attemptShot(state, handler, basketPos);
     return;
   }
   
-  // 3. Find open teammates
-  const openTeammates = getOpenTeammates(state, handler); // defender > 6ft away
+  // 4. Drive to basket if lane is open
+  const defAhead = findNearestDefender(handler, state);
+  const laneClear = !defAhead || dist(defAhead.pos, handler.pos) > 5;
+  if (laneClear && distToBasket > 5 && distToBasket < 25) {
+    // Attack the basket
+    const dir = state.possession === 0 ? 1 : -1;
+    const driveAngle = state.rng() > 0.5 ? 3 : -3; // pick a side
+    handler.targetPos = {
+      x: basketPos.x - dir * 2,
+      y: basketPos.y + driveAngle,
+    };
+    return;
+  }
   
-  // Roller is open (PnR read)
+  // 5. Kick out to open teammate
+  // Prioritize: roller near basket > open 3pt shooter > any open teammate
   const roller = state.players.find(p => p.currentRole === 'screener' && p.teamIdx === state.possession);
   if (roller && checkIfOpen(roller, state) && dist(roller.pos, basketPos) < 12) {
     passBall(state, handler, roller);
     return;
   }
   
-  // Corner/wing shooter open (kick out)
-  const openShooter = openTeammates.find(p => {
+  const openThreeShooter = openTeammates.find(p => {
     const d = dist(p.pos, basketPos);
-    return d > 18 && d < 26; // perimeter
+    return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 70;
   });
-  if (openShooter) {
-    passBall(state, handler, openShooter);
+  if (openThreeShooter) {
+    passBall(state, handler, openThreeShooter);
     return;
   }
   
-  // 4. Drive if path is clear
-  const defAhead = findNearestDefender(handler, state);
-  if (!defAhead || dist(defAhead.pos, handler.pos) > 5) {
-    handler.targetPos = {
-      x: basketPos.x + (handler.pos.x > basketPos.x ? 2 : -2),
-      y: basketPos.y + (state.rng() - 0.5) * 4,
-    };
-    return;
-  }
-  
-  // 5. Pass to any open teammate
   if (openTeammates.length > 0) {
-    passBall(state, handler, openTeammates[0]);
+    // Pass to closest open teammate
+    const closest = openTeammates.sort((a, b) => dist(a.pos, handler.pos) - dist(b.pos, handler.pos));
+    passBall(state, handler, closest[0]);
     return;
   }
   
-  // 6. Contested shot if decent shooter
-  if (distToBasket < 20) {
+  // 6. Contested shot — last resort
+  if (distToBasket < 22) {
     attemptShot(state, handler, basketPos);
+    return;
   }
+  
+  // 7. Nothing else — dribble toward basket
+  handler.targetPos = { x: basketPos.x, y: basketPos.y + (state.rng() - 0.5) * 6 };
 }
 
 // ══════════════════════════════════════════════════════════════════════════
@@ -1338,54 +1440,54 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Stage 1: Ball bouncing off rim with physics
   if (state.ball.bouncing) {
-    state.ball.bounceProgress += 0.013; // ~1.3 seconds for full bounce
+    state.ball.bounceProgress += 0.013;
     const t = Math.min(1, state.ball.bounceProgress);
     
-    // XY: move from rim to bounce target
     state.ball.pos.x = basket.x + (state.ball.bounceTarget.x - basket.x) * t;
     state.ball.pos.y = basket.y + (state.ball.bounceTarget.y - basket.y) * t;
     
-    // Z: bounce physics — starts at rim (10ft), bounces down, then up, then settles
-    // Damped bouncing: z = 10 * e^(-3t) * |cos(6πt)|
     const dampedBounce = 10 * Math.exp(-3 * t) * Math.abs(Math.cos(6 * Math.PI * t));
     state.ball.z = Math.max(0, dampedBounce);
     
     if (t >= 1) {
       state.ball.bouncing = false;
-      state.ball.z = 0; // on the floor
+      state.ball.z = 0;
     }
   }
   
   const reboundPos = state.ball.bouncing ? state.ball.bounceTarget : state.ball.pos;
   
-  // Stage 2: Box out — defenders try to get between their man and the basket (~1.5s)
+  // Stage 2: Box out + crash boards (~1.5s)
   if (state.phaseTicks < 90) {
-    // Bigs and nearby players fight for position
-    for (const def of defTeam) {
-      // Box out: defender positions between offensive player and rebound spot
-      const matchup = offTeam[def.courtIdx] || offTeam[0];
-      const toRebound = { 
-        x: reboundPos.x - matchup.pos.x, 
-        y: reboundPos.y - matchup.pos.y 
-      };
-      const toDist = Math.sqrt(toRebound.x * toRebound.x + toRebound.y * toRebound.y) || 1;
+    // DEFENDERS: box out — get between their man and the rebound spot
+    for (let i = 0; i < defTeam.length; i++) {
+      const def = defTeam[i];
+      const matchup = offTeam[i] || offTeam[0];
       
-      // Box out position: between matchup and rebound, closer to rebound
+      const mx = matchup.pos.x, my = matchup.pos.y;
+      const rx = reboundPos.x, ry = reboundPos.y;
+      const toRebX = rx - mx, toRebY = ry - my;
+      const toRebD = Math.sqrt(toRebX * toRebX + toRebY * toRebY) || 1;
+      
+      // Box out: stand between matchup and rebound
       def.targetPos = {
-        x: matchup.pos.x + (toRebound.x / toDist) * 2.5,
-        y: matchup.pos.y + (toRebound.y / toDist) * 2.5
+        x: mx + (toRebX / toRebD) * 2,
+        y: my + (toRebY / toRebD) * 2
       };
     }
     
-    // Offensive players try to get around box-out to the ball
+    // OFFENSIVE players: bigs crash, guards get back
     for (const off of offTeam) {
-      const toDist = dist(off.pos, reboundPos);
-      if (toDist < 15) {
-        // Try to get to the ball, offset to go around defender
+      const isBig = off.player.position === 'C' || off.player.position === 'PF';
+      if (isBig && dist(off.pos, reboundPos) < 18) {
+        const angle = state.rng() * Math.PI * 2;
         off.targetPos = {
-          x: reboundPos.x + (state.rng() - 0.5) * 4,
-          y: reboundPos.y + (state.rng() - 0.5) * 4
+          x: reboundPos.x + Math.cos(angle) * 3,
+          y: reboundPos.y + Math.sin(angle) * 3
         };
+      } else {
+        // Guards stay back for transition
+        off.targetPos = { x: HALF_X, y: off.pos.y };
       }
     }
     return;
@@ -1393,29 +1495,33 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Stage 3: Ball is grabbed
   if (state.phaseTicks >= 90) {
-    // Players nearest to rebound spot compete
-    const competitors = [...state.players]
-      .filter(p => dist(p.pos, reboundPos) < 12)
+    const nearPlayers = [...state.players]
+      .filter(p => dist(p.pos, reboundPos) < 15)
       .sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos));
     
-    if (competitors.length === 0) {
-      // Nobody close, closest player gets it
-      competitors.push(...[...state.players].sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos)).slice(0, 3));
-    }
+    const competitors = nearPlayers.length > 0 
+      ? nearPlayers.slice(0, 6) 
+      : [...state.players].sort((a, b) => dist(a.pos, reboundPos) - dist(b.pos, reboundPos)).slice(0, 3);
       
     let rebounder = competitors[0];
     let bestValue = -1;
     
-    for (const p of competitors.slice(0, 5)) {
+    for (const p of competitors) {
       const rebSkill = p.player.skills.athletic.rebounding;
       const height = p.player.physical.height;
       const vertical = p.player.physical.vertical;
-      const proximity = Math.max(0.1, 12 - dist(p.pos, reboundPos)); // closer = better
+      const proximity = Math.max(0.1, 15 - dist(p.pos, reboundPos));
       
-      // Defensive players have natural box-out advantage (~60/40 split in NBA)
-      const boxOutBonus = p.teamIdx !== state.possession ? 1.3 : 1.0;
+      // NBA: ~70% defensive rebounds. Box-out is huge advantage
+      const isDefender = p.teamIdx !== state.possession;
+      const boxOutBonus = isDefender ? 1.8 : 1.0;
       
-      const value = skillModifier(rebSkill) * (height / 200) * (vertical / 80) * proximity * boxOutBonus * (0.5 + state.rng() * 0.5);
+      // Bigs naturally better at rebounding
+      const posBonus = p.player.position === 'C' ? 1.3 
+        : p.player.position === 'PF' ? 1.15 : 1.0;
+      
+      const value = skillModifier(rebSkill) * (height / 180) * (vertical / 70) 
+        * proximity * boxOutBonus * posBonus * (0.5 + state.rng() * 0.5);
       
       if (value > bestValue) {
         bestValue = value;
@@ -1431,13 +1537,12 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     state.lastEvent = `${rebounder.player.name} grabs the ${rebType} rebound!`;
     
     if (rebounder.teamIdx !== state.possession) {
-      // Defensive rebound → outlet pass to PG then advance
       state.possession = rebounder.teamIdx;
       state.shotClock = 24;
       state.crossedHalfCourt = false;
       state.advanceClock = 0;
       
-      // Outlet pass: if rebounder is a big, pass to PG
+      // Outlet pass to PG
       const newOffTeam = state.players.filter(p => p.teamIdx === state.possession);
       const pg = newOffTeam.find(p => p.player.position === 'PG' && p !== rebounder);
       if (pg && rebounder.player.position !== 'PG') {
@@ -1447,22 +1552,18 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       
       state.phase = 'advance';
       state.phaseTicks = 0;
-      
-      // Reset play state for new possession
       state.currentPlay = null;
       state.slots.clear();
       state.roles.clear();
       state.defAssignments.clear();
       state.playCompleted = false;
     } else {
-      // Offensive rebound
       state.shotClock = 14;
       state.phase = 'setup';
       state.phaseTicks = 0;
     }
   }
 }
-
 function updateCurrentPlay(state: GameState, basketPos: Vec2, dir: number): void {
   if (!state.currentPlay) return;
   
@@ -1913,26 +2014,34 @@ function assignInitialSlots(state: GameState, offTeam: SimPlayer[], slots: Map<S
 
 function selectPlay(state: GameState, offTeam: SimPlayer[]): void {
   const tactic = state.possession === 0 ? state.homeTacticO : state.awayTacticO;
+  const rng = state.rng;
   
-  let selectedPlay: Play;
+  // Tactic-specific play selection with variety
+  let candidates: string[];
   
   switch (tactic) {
     case 'fast_break':
-      selectedPlay = PLAYBOOK.find(p => p.name === 'Fast Break')!;
+      candidates = ['Fast Break'];
       break;
     case 'iso':
-      selectedPlay = PLAYBOOK.find(p => p.name === 'ISO Clear')!;
+      candidates = ['ISO Clear'];
       break;
     case 'inside':
-      selectedPlay = PLAYBOOK.find(p => p.name === 'Post Up')!;
+      candidates = ['Post Up', 'Horns PnR'];
       break;
+    case 'shoot':
+      // Shooting teams favor plays that generate open 3s
+      candidates = ['Floppy', 'Horns PnR', 'Flex', 'Spain PnR'];
+      break;
+    case 'motion':
     default:
-      // Default to motion or pick and roll
-      selectedPlay = state.rng() < 0.5 
-        ? PLAYBOOK.find(p => p.name === 'Motion Offense')!
-        : PLAYBOOK.find(p => p.name === 'Pick and Roll (Right)')!;
+      // Balanced selection — variety is key
+      candidates = ['Horns PnR', 'Side PnR', 'UCLA Cut', 'Flex', 'Spain PnR', 'Floppy'];
       break;
   }
+  
+  const playName = candidates[Math.floor(rng() * candidates.length)];
+  const selectedPlay = PLAYBOOK.find(p => p.name === playName) || PLAYBOOK[0];
   
   state.currentPlay = selectedPlay;
   state.currentStep = 0;
