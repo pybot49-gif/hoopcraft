@@ -191,8 +191,8 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
     if (player === handler) continue;
     if (player.isScreening || player.isCutting) continue;
     
-    // Every ~3 seconds (30 ticks), consider a movement
-    const moveHash = (state.phaseTicks + player.courtIdx * 7) % 30;
+    // Every ~3 seconds (180 ticks), consider a movement
+    const moveHash = (state.phaseTicks + player.courtIdx * 37) % 180;
     if (moveHash !== 0) continue;
     
     const role = player.currentRole;
@@ -210,7 +210,7 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
             x: slotPos.x + dir * 4,
             y: slotPos.y + (state.rng() > 0.5 ? 3 : -3)
           };
-          player.targetPos = state.phaseTicks % 60 < 30 ? jab : { ...slotPos };
+          player.targetPos = state.phaseTicks % 360 < 180 ? jab : { ...slotPos };
           player.isCutting = true;
         }
       }
@@ -921,7 +921,7 @@ function getPassOptions(state: GameState, ballHandler: SimPlayer): SimPlayer[] {
 // ══════════════════════════════════════════════════════════════════════════
 
 function tick(state: GameState): GameState {
-  const dt = 0.1;
+  const dt = 1 / 60; // 1 tick = 1/60th of a second (matches requestAnimationFrame)
   state.phaseTicks++;
   state.gameTime += dt;
 
@@ -1106,8 +1106,8 @@ function handleJumpBall(state: GameState): void {
     };
   });
 
-  if (state.phaseTicks > 30) {
-    // Execute jump ball
+  if (state.phaseTicks > 180) {
+    // Execute jump ball (~3 seconds)
     executeJumpBall(state, centers);
   }
 }
@@ -1128,8 +1128,8 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
     };
   }
   
-  // Stage 1 (ticks 0-25): Set up inbound — ref handles ball, players get in position
-  if (state.phaseTicks < 25) {
+  // Stage 1 (0-2.5s): Set up inbound — ref handles ball, players get in position
+  if (state.phaseTicks < 150) {
     // Inbounder stands OUT OF BOUNDS behind baseline
     const inbounder = offTeam[0];
     const baselineX = dir > 0 ? 0.5 : COURT_W - 0.5;
@@ -1153,8 +1153,8 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       offTeam[i].targetPos = { ...receiverSpots[Math.min(i - 1, receiverSpots.length - 1)] };
     }
     
-  // Stage 2 (ticks 25-40): Receiver cuts toward ball
-  } else if (state.phaseTicks < 40) {
+  // Stage 2 (2.5-4s): Receiver cuts toward ball
+  } else if (state.phaseTicks < 240) {
     const inbounder = getBallHandler(state);
     if (inbounder) {
       const receiver = offTeam.find(p => p !== inbounder && p.player.position === 'PG') 
@@ -1167,7 +1167,7 @@ function handleInbound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
       }
     }
     
-  // Stage 3 (tick 40+): Execute inbound pass
+  // Stage 3 (4s+): Execute inbound pass
   } else {
     const inbounder = getBallHandler(state);
     if (inbounder) {
@@ -1263,8 +1263,8 @@ function handleSetup(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer[
     }
   });
   
-  if (state.phaseTicks > 20) {
-    // Select and start play
+  if (state.phaseTicks > 120) {
+    // Select and start play (~2 seconds to set up)
     selectPlay(state, offTeam);
     state.phase = 'action';
     state.phaseTicks = 0;
@@ -1320,7 +1320,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   // ~100 possessions/team → elite = 2%, avg = 0.8%
   // Skill 96 (S) → ~2.5%, skill 60 (D) → ~0.5%
   const nearestDefender = findNearestDefender(handler, state);
-  if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 50 === 0) {
+  if (nearestDefender && dist(nearestDefender.pos, handler.pos) < 2.5 && state.phaseTicks % 300 === 0) {
     const stealSkill = nearestDefender.player.skills.defense.steal;
     const stealChance = 0.001 + (stealSkill / 100) * 0.012; // D(60)=0.8%, S(96)=1.3%
     if (state.rng() < stealChance) {
@@ -1338,7 +1338,7 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   // Stage 1: Ball bouncing off rim with physics
   if (state.ball.bouncing) {
-    state.ball.bounceProgress += 0.08; // slower bounce
+    state.ball.bounceProgress += 0.013; // ~1.3 seconds for full bounce
     const t = Math.min(1, state.ball.bounceProgress);
     
     // XY: move from rim to bounce target
@@ -1358,8 +1358,8 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   
   const reboundPos = state.ball.bouncing ? state.ball.bounceTarget : state.ball.pos;
   
-  // Stage 2: Box out — defenders try to get between their man and the basket
-  if (state.phaseTicks < 15) {
+  // Stage 2: Box out — defenders try to get between their man and the basket (~1.5s)
+  if (state.phaseTicks < 90) {
     // Bigs and nearby players fight for position
     for (const def of defTeam) {
       // Box out: defender positions between offensive player and rebound spot
@@ -1392,7 +1392,7 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
   }
   
   // Stage 3: Ball is grabbed
-  if (state.phaseTicks >= 15) {
+  if (state.phaseTicks >= 90) {
     // Players nearest to rebound spot compete
     const competitors = [...state.players]
       .filter(p => dist(p.pos, reboundPos) < 12)
@@ -1466,7 +1466,7 @@ function handleRebound(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
 function updateCurrentPlay(state: GameState, basketPos: Vec2, dir: number): void {
   if (!state.currentPlay) return;
   
-  state.stepTimer += 0.1;
+  state.stepTimer += 1 / 60;
   
   const currentStep = state.currentPlay.steps[state.currentStep];
   if (!currentStep) return;
