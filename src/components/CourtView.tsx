@@ -314,21 +314,30 @@ function offBallMovement(state: GameState, offTeam: SimPlayer[], basketPos: Vec2
       }
     }
     
-    // ── RELOCATE — spacers and cutters drift to open spots ────────────
-    if (player.currentRole === 'spacer' && roll < 0.5) {
-      // Shooters actively relocate to find open 3pt spots
-      const angle = state.rng() * Math.PI; // random angle on the arc
-      const arcDist = 22 + state.rng() * 3; // 22-25ft from basket
-      const candidate = {
-        x: basketPos.x - dir * Math.cos(angle) * arcDist,
-        y: Math.max(3, Math.min(47, basketPos.y + Math.sin(angle - Math.PI/2) * arcDist))
-      };
-      // Check if this spot is better (more open) than current
+    // ── RELOCATE — spacers drift to 3PT spots ──────────────────────────
+    if (player.currentRole === 'spacer' && roll < 0.55) {
+      // Key 3pt spots: corners, wings, top of key
+      const spots3pt = [
+        { x: basketPos.x - dir * 23, y: basketPos.y },              // top of key
+        { x: basketPos.x - dir * 20, y: basketPos.y - 15 },        // left wing
+        { x: basketPos.x - dir * 20, y: basketPos.y + 15 },        // right wing
+        { x: basketPos.x - dir * 8, y: Math.max(3, basketPos.y - 22) }, // left corner
+        { x: basketPos.x - dir * 8, y: Math.min(47, basketPos.y + 22) }, // right corner
+      ];
+      // Pick the most open spot
       const teammates = offTeam.filter(p => p !== player);
-      const minDist = Math.min(...teammates.map(t => dist(t.pos, candidate)), 50);
-      if (minDist > 8) {
-        player.targetPos = candidate;
-        player.isCutting = true; // use cutting flag to maintain movement
+      let bestSpot = spots3pt[0];
+      let bestMinDist = 0;
+      for (const spot of spots3pt) {
+        const minD = Math.min(...teammates.map(t => dist(t.pos, spot)), 50);
+        if (minD > bestMinDist) {
+          bestMinDist = minD;
+          bestSpot = spot;
+        }
+      }
+      if (bestMinDist > 6) {
+        player.targetPos = bestSpot;
+        player.isCutting = true;
         continue;
       }
     }
@@ -1162,7 +1171,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
       // At rim — but check for kick-out to open perimeter shooter first
       const openPerimeter = openTeammates.find(p => {
         const d = dist(p.pos, basketPos);
-        return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
+        return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 62;
       });
       if (openPerimeter && state.rng() < 0.35) {
         handler.isDriving = false;
@@ -1191,7 +1200,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
       // Prefer open perimeter shooters for kick-outs
       const perimeterTarget = openTeammates.find(p => {
         const d = dist(p.pos, basketPos);
-        return d > 18 && p.player.skills.shooting.three_point >= 65;
+        return d > 18 && p.player.skills.shooting.three_point >= 60;
       });
       const kickTarget = perimeterTarget || openTeammates[0];
       passBall(state, handler, kickTarget);
@@ -1243,7 +1252,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     const three = handler.player.skills.shooting.three_point;
     const bestShootingSkill = Math.max(catchShoot, three);
     // Good shooters (≥75) shoot immediately. Decent (65-74) sometimes. Bad (<65) never from 3.
-    if (bestShootingSkill >= 75 || (bestShootingSkill >= 65 && state.rng() < 0.3)) {
+    if (bestShootingSkill >= 70 || (bestShootingSkill >= 60 && state.rng() < 0.35)) {
       if (!fewPasses || state.rng() < 0.25) { // penalize iso no-pass shots
         attemptShot(state, handler, basketPos);
         return;
@@ -1285,7 +1294,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     // Open 3pt shooter
     const openThreeShooter = openTeammates.find(p => {
       const d = dist(p.pos, basketPos);
-      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
+      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 62;
     });
     if (openThreeShooter) {
       passBall(state, handler, openThreeShooter);
@@ -1340,7 +1349,7 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
     
     const openThreeShooter = openTeammates.find(p => {
       const d = dist(p.pos, basketPos);
-      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 68;
+      return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 62;
     });
     if (openThreeShooter) {
       passBall(state, handler, openThreeShooter);
@@ -1386,13 +1395,13 @@ function executeReadAndReact(handler: SimPlayer, state: GameState, basketPos: Ve
   // 3c. Open 3 — only take if you can actually shoot
   if (isOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
-    if (three >= 70 || (three >= 65 && aggressive) || mustAttack) {
+    if (three >= 65 || (three >= 60 && aggressive) || mustAttack) {
       if (!noPasses || state.rng() < 0.35) {
         attemptShot(state, handler, basketPos);
         return;
       }
     }
-    if (three < 65 && laneClear) {
+    if (three < 62 && laneClear) {
       handler.targetPos = { ...basketPos };
       handler.isCutting = true;
       handler.isDriving = true;
