@@ -92,13 +92,17 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   // This is the key to higher assist rates - trigger after any pass
   if (holdTime < 1.2 && state.passCount >= 1 && isOpen && !isHogging) {
     const catchShoot = handler.player.skills.shooting.catch_and_shoot || 65;
-    if (distToBasket > 22 && distToBasket < 27 && handler.player.skills.shooting.three_point >= 62) {
-      if (state.rng() < 0.70 + (catchShoot / 100) * 0.15) {
+    if (distToBasket < 8) {
+      // Close range — always finish
+      attemptShot(state, handler, basketPos);
+      return;
+    } else if (distToBasket > 22 && distToBasket < 27) {
+      if (state.rng() < 0.75 + (catchShoot / 100) * 0.15) {
         attemptShot(state, handler, basketPos);
         return;
       }
-    } else if (distToBasket > 8 && distToBasket < 22) {
-      if (state.rng() < 0.60 + (catchShoot / 100) * 0.15) {
+    } else if (distToBasket >= 8 && distToBasket <= 22) {
+      if (state.rng() < 0.65 + (catchShoot / 100) * 0.15) {
         attemptShot(state, handler, basketPos);
         return;
       }

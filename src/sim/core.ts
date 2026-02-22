@@ -356,39 +356,8 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       break;
       
     case 'late': {
-      const bestScorer = findBestScorer(offTeam);
-      const bestStats = state.boxStats.get(bestScorer.id);
-      const bestHogging = bestStats && teamAvgFGA > 4 && bestStats.fga > teamAvgFGA * 1.5;
-      if (handler !== bestScorer && checkIfOpen(bestScorer, state) && !bestHogging) {
-        passBall(state, handler, bestScorer);
-        return;
-      }
-      const openTeammates = getOpenTeammates(state, handler);
-      if (openTeammates.length > 0) {
-        const openThree = openTeammates.find(p => {
-          const d = dist(p.pos, basketPos);
-          return d > 22 && d < 27 && p.player.skills.shooting.three_point >= 65;
-        });
-        if (openThree) {
-          passBall(state, handler, openThree);
-          return;
-        }
-        const bestOpen = openTeammates.sort((a, b) => {
-          const aStats = state.boxStats.get(a.id) || emptyBoxStats();
-          const bStats = state.boxStats.get(b.id) || emptyBoxStats();
-          const aFGP = aStats.fga > 0 ? aStats.fgm / aStats.fga : 0.45;
-          const bFGP = bStats.fga > 0 ? bStats.fgm / bStats.fga : 0.45;
-          return bFGP - aFGP;
-        })[0];
-        const bestOpenStats = state.boxStats.get(bestOpen.id) || emptyBoxStats();
-        if (bestOpenStats.fga < teamAvgFGA * 1.5) {
-          passBall(state, handler, bestOpen);
-          return;
-        }
-      }
-      const distToBasket2 = dist(handler.pos, basketPos);
-      if (distToBasket2 < 25) attemptShot(state, handler, basketPos);
-      else executeReadAndReact(handler, state, basketPos);
+      // Late stage: use read-and-react (which includes catch-and-shoot)
+      executeReadAndReact(handler, state, basketPos);
       break;
     }
     case 'desperation':
