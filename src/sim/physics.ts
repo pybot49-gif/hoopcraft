@@ -5,8 +5,12 @@ import { addStat } from './stats';
 import { changePossession } from './core';
 
 export function updateBallFlight(state: GameState, dt: number): void {
+  const prevProgress = state.ball.flightProgress;
   state.ball.flightProgress += dt / state.ball.flightDuration;
   const t = Math.min(1, state.ball.flightProgress);
+  if (state.gameTime > 520 && state.gameTime < 530) {
+    console.warn(`[BALL] t=${t.toFixed(3)} prevP=${prevProgress.toFixed(3)} p=${state.ball.flightProgress.toFixed(3)} dur=${state.ball.flightDuration.toFixed(3)} isShot=${state.ball.isShot} inFlight=${state.ball.inFlight}`);
+  }
 
   if (state.ball.jumpBall?.active) {
     const height = Math.sin(t * Math.PI) * 15;

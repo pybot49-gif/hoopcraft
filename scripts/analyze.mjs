@@ -46,6 +46,11 @@ await ctx.route('**/*', async (route) => {
   } catch { await route.fulfill({ status: 404, body: 'Not found' }); }
 });
 
+// Capture browser console for debug output
+page.on('console', msg => {
+  if (msg.text().includes('[FREEZE]')) console.log('BROWSER: ' + msg.text());
+});
+
 console.log('Loading game...');
 await page.goto('http://hoopcraft.local/hoopcraft/');
 await page.waitForTimeout(2000);

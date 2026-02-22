@@ -211,6 +211,7 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
   
   clearBallCarrier(state);
   state.phase = 'shooting';
+  state.phaseTicks = 0;
   state.currentPlay = null;
   
   state.lastEvent = `${playContext}${shooterName} ${shotType}${contestStr}`;

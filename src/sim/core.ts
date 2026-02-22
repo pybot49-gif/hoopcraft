@@ -536,6 +536,23 @@ export function tick(state: GameState): GameState {
   state.phaseTicks++;
   state.gameTime += dt;
 
+  // Freeze detector — force recovery if stuck
+  // shooting: ball flight ~60-120 ticks, so 300 is generous
+  // rebound: should resolve in ~120 ticks
+  // freethrow: max 3 FTs at 270 ticks + buffer
+  if (state.phase === 'shooting' && state.phaseTicks > 300) {
+    state.ball.inFlight = false;
+    state.ball.isShot = false;
+    state.ball.bouncing = false;
+    changePossession(state, '');
+  } else if (state.phase === 'rebound' && state.phaseTicks > 300) {
+    state.ball.bouncing = false;
+    changePossession(state, '');
+  } else if (state.phase === 'freethrow' && state.phaseTicks > 400) {
+    state.freeThrows = null;
+    changePossession(state, '');
+  }
+
   // Collect tick data for analysis
   if (_tickLog.length < 200000) {
     _tickLog.push({
@@ -637,6 +654,13 @@ export function tick(state: GameState): GameState {
   // Handle ball in flight
   if (state.ball.inFlight) {
     updateBallFlight(state, dt);
+    // Safety: if ball still in flight after impossibly long time, force reset
+    if (state.ball.inFlight && state.ball.flightProgress > 5) {
+      console.warn(`[BALL_STUCK] flightProgress=${state.ball.flightProgress.toFixed(2)} dur=${state.ball.flightDuration.toFixed(3)} phase=${state.phase}`);
+      state.ball.inFlight = false;
+      state.ball.isShot = false;
+      changePossession(state, '');
+    }
     for (const p of state.players) {
       movePlayerToward(p, dt, state);
     }
