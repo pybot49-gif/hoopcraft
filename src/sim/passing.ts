@@ -191,9 +191,9 @@ export function passBall(state: GameState, from: SimPlayer, to: SimPlayer): void
     const dToLine = distanceToLine(def.pos, { from: from.pos, to: to.pos });
     const defDist = dist(def.pos, from.pos);
     
-    if (dToLine < 2 && defDist < passDist && defDist > 2) {
+    if (dToLine < 3.5 && defDist < passDist && defDist > 2) {
       const stealSkill = def.player.skills.defense.steal;
-      let baseChance = 0.01 + (stealSkill / 100) * 0.03;
+      let baseChance = 0.02 + (stealSkill / 100) * 0.06;
       
       const defReach = 8 + (def.player.physical.height / 200) * 1.5;
       

@@ -73,16 +73,17 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
     const defVertical = nearestDef.player.physical.vertical || 70;
     const shooterHeight = shooter.player.physical.height;
     const defHeight = nearestDef.player.physical.height;
-    let blockChance = 0.01 + (blockSkill / 100) * 0.05 + (defVertical / 100) * 0.015;
-    if (distToBasket < 6) blockChance *= 1.8;
-    else if (distToBasket < 12) blockChance *= 1.2;
-    else blockChance *= 0.5; // mid-range harder to block
-    if (contestDistance > 5) blockChance *= 0.4;
-    else if (contestDistance > 3) blockChance *= 0.7;
-    if (defHeight > shooterHeight + 5) blockChance *= 1.3;
+    let blockChance = 0.02 + (blockSkill / 100) * 0.08 + (defVertical / 100) * 0.02;
+    if (distToBasket < 6) blockChance *= 2.2;
+    else if (distToBasket < 12) blockChance *= 1.3;
+    else blockChance *= 0.4; // mid-range/3pt harder to block
+    if (contestDistance > 6) blockChance *= 0.3;
+    else if (contestDistance > 4) blockChance *= 0.6;
+    else if (contestDistance < 2) blockChance *= 1.5;
+    if (defHeight > shooterHeight + 5) blockChance *= 1.4;
     if (isDunk) blockChance *= 0.3;
-    if (blockSkill < 50) blockChance *= 0.2;
-    blockChance = Math.min(0.15, blockChance);
+    if (blockSkill < 50) blockChance *= 0.15;
+    blockChance = Math.min(0.18, blockChance);
     // Defender jumps to contest
     if (nearestDef.jumpZ === 0) {
       nearestDef.jumpVelZ = (defVertical / 100) * 14 + 4;

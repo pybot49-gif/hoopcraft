@@ -324,6 +324,19 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   
   const teamAvgFGA = offTeam.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
   
+  // Force shot when shot clock critically low — overrides play
+  if (state.shotClock < 5) {
+    state.currentPlay = null;
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  // Force shot after excessive passes — overrides play
+  if (state.passCount >= 8) {
+    state.currentPlay = null;
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  
   if (state.currentPlay) {
     updateCurrentPlay(state, basketPos, dir);
     return;
@@ -381,19 +394,22 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       break;
   }
   
-  // Steal attempts — per-possession check (once every ~3 seconds of action)
-  if (state.phaseTicks % 180 === 60) {
+  // Steal attempts — per-possession check (once every ~2 seconds of action)
+  if (state.phaseTicks % 120 === 60) {
     const nearestDef = findNearestDefender(handler, state);
     if (nearestDef) {
       const defDist = dist(nearestDef.pos, handler.pos);
       const stealSkill = nearestDef.player.skills.defense.steal;
       const handlingSkill = handler.player.skills.playmaking.ball_handling;
-      // Base ~7% per possession, scaled by proximity and skills
-      let stealChance = 0.04 + (stealSkill / 100) * 0.06 - (handlingSkill / 100) * 0.03;
-      if (defDist > 5) stealChance *= 0.2;
-      else if (defDist > 3) stealChance *= 0.5;
+      // Base ~5% per check, scaled by proximity and skills
+      let stealChance = 0.03 + (stealSkill / 100) * 0.06 - (handlingSkill / 100) * 0.02;
+      if (defDist > 6) stealChance *= 0.2;
+      else if (defDist > 4) stealChance *= 0.5;
+      else if (defDist < 2) stealChance *= 2.0;
       // Driving into traffic = more vulnerable
       if (handler.isDriving && defDist < 4) stealChance *= 1.5;
+      // Passing lanes — bad passers more vulnerable
+      if (state.passCount > 3 && handlingSkill < 75) stealChance *= 1.3;
       stealChance = Math.max(0.01, Math.min(0.12, stealChance));
       if (state.rng() < stealChance) {
         addStat(state, handler.id, 'tov');

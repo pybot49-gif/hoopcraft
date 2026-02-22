@@ -47,14 +47,15 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const isDecisionTick = Math.floor(state.gameTime * 4) !== Math.floor((state.gameTime - 1/60) * 4);
   
   const mustAttack = holdTime > 3.5 || state.shotClock < 4;
-  const shotClockPressure = state.shotClock < 10;
+  const shotClockPressure = state.shotClock < 7;
   const passFirst = holdTime < 1.0 && state.passCount === 0 && !mustAttack && !shotClockPressure;
   
   const handlerStats = state.boxStats.get(handler.id);
   const teamPlayers = state.players.filter(p => p.teamIdx === handler.teamIdx);
   const teamAvgFGA = teamPlayers.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
-  const isHogging = handlerStats && teamAvgFGA > 4 && handlerStats.fga > teamAvgFGA * 1.5;
-  const isHardCapped = handlerStats && handlerStats.fga >= 25;
+  const teamTotalFGA = teamPlayers.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0);
+  const isHogging = handlerStats && teamAvgFGA > 3 && handlerStats.fga > teamAvgFGA * 1.4;
+  const isHardCapped = handlerStats && (handlerStats.fga >= 22 || (teamTotalFGA > 20 && handlerStats.fga / teamTotalFGA > 0.28));
   
   const noPasses = state.passCount === 0;
   const fewPasses = state.passCount < 2;
@@ -64,15 +65,44 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
   const laneClear = defDist > 6 && !defBetween;
   
-  // SHOT CLOCK PRESSURE — force shot if clock is winding down
-  if (shotClockPressure && isOpen && distToBasket < 25) {
+  // TOO MANY PASSES — force a shot after 4+ passes
+  // Too many passes — force a shot (but allow plays to develop)
+  if (state.passCount >= 6) {
     attemptShot(state, handler, basketPos);
     return;
   }
+  
+  // SHOT CLOCK PRESSURE — force shot or drive
+  if (shotClockPressure) {
+    if (distToBasket < 30) {
+      attemptShot(state, handler, basketPos);
+      return;
+    }
+    handler.targetPos = { ...basketPos };
+    handler.isCutting = true;
+    handler.isDriving = true;
+    return;
+  }
   if (mustAttack) {
-    // Absolute last resort — just shoot
     attemptShot(state, handler, basketPos);
     return;
+  }
+
+  // CATCH-AND-SHOOT — just received a pass and open? Shoot immediately!
+  // This is the key to higher assist rates
+  if (holdTime < 0.8 && state.passCount >= 1 && isOpen && !isHogging) {
+    const catchShoot = handler.player.skills.shooting.catch_and_shoot || 65;
+    if (distToBasket > 22 && distToBasket < 27 && handler.player.skills.shooting.three_point >= 62) {
+      if (state.rng() < 0.55 + (catchShoot / 100) * 0.25) {
+        attemptShot(state, handler, basketPos);
+        return;
+      }
+    } else if (distToBasket > 8 && distToBasket < 22) {
+      if (state.rng() < 0.45 + (catchShoot / 100) * 0.20) {
+        attemptShot(state, handler, basketPos);
+        return;
+      }
+    }
   }
 
   // 0. COMMITTED DRIVE
@@ -281,9 +311,11 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   }
   
   const aggressive = holdTime > 2;
+  // Shot willingness increases with passes: 0→0.30, 1→0.50, 2→0.70, 3→0.85, 4+→0.95
+  const shotWill = Math.min(0.95, 0.30 + state.passCount * 0.20);
   
   // 3a. DRIVE
-  if (laneClear && distToBasket > 8 && distToBasket < 28 && (state.passCount >= 1 || holdTime > 2.5)) {
+  if (laneClear && distToBasket > 8 && distToBasket < 28 && (state.passCount >= 1 || holdTime > 2.0)) {
     handler.targetPos = { ...basketPos };
     handler.isCutting = true;
     handler.isDriving = true;
@@ -291,12 +323,12 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   }
   
   // 3b. Open mid-range
-  if (isOpen && distToBasket < 22 && distToBasket > 8 && (aggressive || mustAttack)) {
-    if (isHogging && openTeammates.length > 0 && !mustAttack) {
+  if (isOpen && distToBasket < 22 && distToBasket > 8) {
+    if (isHogging && openTeammates.length > 0) {
       passBall(state, handler, openTeammates[0]);
       return;
     }
-    if (!noPasses || state.rng() < 0.35) {
+    if (state.rng() < shotWill) {
       attemptShot(state, handler, basketPos);
       return;
     }
@@ -305,17 +337,17 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   // 3c. Open 3
   if (isOpen && distToBasket > 22 && distToBasket < 27) {
     const three = handler.player.skills.shooting.three_point;
-    if (three >= 65 || (three >= 60 && aggressive) || mustAttack) {
-      if (isHogging && openTeammates.length > 0 && !mustAttack) {
+    if (three >= 60 || aggressive) {
+      if (isHogging && openTeammates.length > 0) {
         passBall(state, handler, openTeammates[0]);
         return;
       }
-      if (!noPasses || state.rng() < 0.35) {
+      if (state.rng() < shotWill) {
         attemptShot(state, handler, basketPos);
         return;
       }
     }
-    if (three < 62 && laneClear) {
+    if (three < 60 && laneClear) {
       handler.targetPos = { ...basketPos };
       handler.isCutting = true;
       handler.isDriving = true;
@@ -323,14 +355,15 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
     }
   }
   
-  // 5. Must score
-  if (mustAttack && distToBasket < 25) {
-    attemptShot(state, handler, basketPos);
+  // 4. Default pass to open teammate
+  if (openTeammates.length > 0 && state.passCount < 5) {
+    passBall(state, handler, openTeammates[0]);
     return;
   }
   
-  if (openTeammates.length > 0) {
-    passBall(state, handler, openTeammates[0]);
+  // 5. Just shoot — too many passes already
+  if (distToBasket < 27) {
+    attemptShot(state, handler, basketPos);
     return;
   }
   
