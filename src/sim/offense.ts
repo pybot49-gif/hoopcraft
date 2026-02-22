@@ -43,10 +43,12 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const openTeammates = getOpenTeammates(state, handler);
   const holdTime = state.dribbleTime;
   
-  const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
+  // Decision frequency: 4x per second (every ~15 ticks)
+  const isDecisionTick = Math.floor(state.gameTime * 4) !== Math.floor((state.gameTime - 1/60) * 4);
   
-  const mustAttack = holdTime > 3.5 || state.shotClock < 5;
-  const passFirst = holdTime < 1.0 && state.passCount === 0 && !mustAttack;
+  const mustAttack = holdTime > 3.5 || state.shotClock < 4;
+  const shotClockPressure = state.shotClock < 10;
+  const passFirst = holdTime < 1.0 && state.passCount === 0 && !mustAttack && !shotClockPressure;
   
   const handlerStats = state.boxStats.get(handler.id);
   const teamPlayers = state.players.filter(p => p.teamIdx === handler.teamIdx);
@@ -62,6 +64,17 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
   const laneClear = defDist > 6 && !defBetween;
   
+  // SHOT CLOCK PRESSURE — force shot if clock is winding down
+  if (shotClockPressure && isOpen && distToBasket < 25) {
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  if (mustAttack) {
+    // Absolute last resort — just shoot
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+
   // 0. COMMITTED DRIVE
   if (handler.isDriving) {
     if (distToBasket < 6) {
@@ -231,10 +244,10 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   }
   
   // 3. Read the defense — pass hunger
-  // passHunger: 0 → 0.55, 1 → 0.40, 2 → 0.25, 3+ → 0.10
-  const passHunger = Math.min(0.55, 0.10 + Math.max(0, 3 - state.passCount) * 0.15);
+  // passHunger: 0 → 0.45, 1 → 0.30, 2 → 0.15, 3+ → 0.05
+  const passHunger = Math.min(0.45, 0.05 + Math.max(0, 3 - state.passCount) * 0.13);
   
-  if (!mustAttack && openTeammates.length > 0 && state.rng() < passHunger) {
+  if (!shotClockPressure && openTeammates.length > 0 && state.rng() < passHunger) {
     const superstar = openTeammates.find(p => p.player.isSuperstar);
     if (superstar && state.rng() < 0.45) {
       passBall(state, handler, superstar);

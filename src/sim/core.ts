@@ -621,6 +621,8 @@ export function tick(state: GameState): GameState {
 
   // Violations
   if (state.shotClock <= 0 && state.gameStarted) {
+    state.shotClockViolations[state.possession]++;
+    console.warn(`[SCV] team=${state.possession} passCount=${state.passCount} phase=${state.phase} phaseTicks=${state.phaseTicks} gameTime=${state.gameTime.toFixed(1)}`);
     const ballHandler = state.players.find(p => p.hasBall);
     if (ballHandler) addStat(state, ballHandler.id, 'tov');
     changePossession(state, 'Shot clock violation');
@@ -900,6 +902,7 @@ export function initGameState(): GameState {
     assists: [0, 0],
     lastAssist: null,
     deadBallTimer: 0,
+    shotClockViolations: [0, 0],
     boxStats: new Map(allPlayers.map(p => [p.id, emptyBoxStats()])),
   };
 }

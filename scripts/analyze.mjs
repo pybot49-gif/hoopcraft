@@ -47,8 +47,13 @@ await ctx.route('**/*', async (route) => {
 });
 
 // Capture browser console for debug output
+const browserLogs = [];
 page.on('console', msg => {
-  if (msg.text().includes('[FREEZE]')) console.log('BROWSER: ' + msg.text());
+  const t = msg.text();
+  if (t.includes('[FREEZE]') || t.includes('[SCV]') || t.includes('[BALL]')) {
+    console.log('BROWSER: ' + t);
+    browserLogs.push(t);
+  }
 });
 
 console.log('Loading game...');
@@ -531,6 +536,8 @@ const report = await page.evaluate(() => {
 
 console.log('');
 for (const line of report) console.log(line);
+const scvCount = browserLogs.filter(l => l.includes('[SCV]')).length;
+console.log(`\nShot Clock Violations: ${scvCount}`);
 
 // Final score — extract from box score headers "Hawks — 111" and "Wolves — 85"
 const score = await page.evaluate(() => {

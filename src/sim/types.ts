@@ -158,6 +158,7 @@ export interface GameState {
   hasFastBroken: boolean;
   passCount: number;
   deadBallTimer: number;
+  shotClockViolations: [number, number];
   assists: [number, number];
   lastAssist: string | null;
   boxStats: Map<string, PlayerBoxStats>;
