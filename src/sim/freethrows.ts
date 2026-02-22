@@ -4,7 +4,11 @@ import { addStat } from './stats';
 import { changePossession } from './core';
 
 export function handleFreeThrows(state: GameState): void {
-  if (!state.freeThrows) return;
+  if (!state.freeThrows) {
+    // Safety: if phase is freethrow but no FT data, recover
+    changePossession(state, '');
+    return;
+  }
   const ft = state.freeThrows;
   
   if (state.phaseTicks === 1) {
@@ -12,6 +16,13 @@ export function handleFreeThrows(state: GameState): void {
     ft.shooter.targetPos = { ...basket };
     ft.shooter.targetPos.x += (state.possession === 0 ? -1 : 1) * 15;
     state.lastEvent = `${ft.shooter.player.name} at the line (${ft.made}/${ft.total})`;
+  }
+  
+  // Safety timeout — if FT phase runs too long, force completion
+  if (state.phaseTicks > 350) {
+    state.freeThrows = null;
+    changePossession(state, '');
+    return;
   }
   
   // Each FT at 90-tick intervals

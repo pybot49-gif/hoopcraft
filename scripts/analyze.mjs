@@ -529,15 +529,44 @@ for (const line of report) console.log(line);
 
 // Final score — extract from box score headers "Hawks — 111" and "Wolves — 85"
 const score = await page.evaluate(() => {
+  const teamDivs = document.querySelectorAll('.font-bold.mb-1.text-sm');
+  if (teamDivs.length >= 2) {
+    const t0 = teamDivs[0].textContent?.match(/(\d+)/);
+    const t1 = teamDivs[1].textContent?.match(/(\d+)/);
+    if (t0 && t1) return `${t0[1]} - ${t1[1]}`;
+  }
   const text = document.body.innerText;
-  const hawksMatch = text.match(/Hawks\s*[—–-]\s*(\d+)/);
-  const wolvesMatch = text.match(/Wolves\s*[—–-]\s*(\d+)/);
-  if (hawksMatch && wolvesMatch) return `${hawksMatch[1]} - ${wolvesMatch[1]}`;
-  // Fallback: look for score in game event text like "(109-85)"
   const eventMatch = text.match(/\((\d{2,3})-(\d{2,3})\)/);
   return eventMatch ? `${eventMatch[1]} - ${eventMatch[2]}` : 'unknown';
 });
 console.log(`\nFinal Score: ${score}`);
+
+// Box Score — read table cells directly
+const boxScore = await page.evaluate(() => {
+  const tables = document.querySelectorAll('table');
+  if (!tables.length) return '';
+  const result = [];
+  // Team headers are siblings before each table
+  const teamDivs = document.querySelectorAll('.font-bold.mb-1.text-sm');
+  let tIdx = 0;
+  for (const table of tables) {
+    if (teamDivs[tIdx]) result.push('\n' + teamDivs[tIdx].textContent);
+    tIdx++;
+    const rows = table.querySelectorAll('tr');
+    for (const row of rows) {
+      const cells = row.querySelectorAll('th, td');
+      const vals = [];
+      cells.forEach(c => vals.push(c.textContent.trim().padStart(4)));
+      result.push('│ ' + vals.join(' '));
+    }
+  }
+  return result.join('\n');
+});
+if (boxScore.trim()) {
+  console.log('\n┌─ BOX SCORE ─────────────────────────────────────────────────────────');
+  console.log(boxScore);
+  console.log('└─────────────────────────────────────────────────────────────────────');
+}
 
 await browser.close();
 process.exit(0);

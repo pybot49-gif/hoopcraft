@@ -46,13 +46,13 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const isDecisionTick = Math.floor(state.gameTime * 2) !== Math.floor((state.gameTime - 1/60) * 2);
   
   const mustAttack = holdTime > 3.5 || state.shotClock < 5;
-  const passFirst = holdTime < 1.8 && !mustAttack;
+  const passFirst = holdTime < 1.0 && state.passCount === 0 && !mustAttack;
   
   const handlerStats = state.boxStats.get(handler.id);
   const teamPlayers = state.players.filter(p => p.teamIdx === handler.teamIdx);
   const teamAvgFGA = teamPlayers.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
-  const isHogging = handlerStats && teamAvgFGA > 2 && handlerStats.fga > teamAvgFGA * 1.3;
-  const isHardCapped = handlerStats && handlerStats.fga > 25;
+  const isHogging = handlerStats && teamAvgFGA > 4 && handlerStats.fga > teamAvgFGA * 1.5;
+  const isHardCapped = handlerStats && handlerStats.fga >= 25;
   
   const noPasses = state.passCount === 0;
   const fewPasses = state.passCount < 2;
@@ -61,17 +61,6 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const defDist = defAhead ? dist(defAhead.pos, handler.pos) : 20;
   const defBetween = defAhead ? isDefenderBetween(handler, defAhead, basketPos) : false;
   const laneClear = defDist > 6 && !defBetween;
-  
-  // HARD CAP: if player has too many FGA, always pass
-  if (isHardCapped && !mustAttack && openTeammates.length > 0) {
-    const target = openTeammates.sort((a, b) => {
-      const aFGA = state.boxStats.get(a.id)?.fga || 0;
-      const bFGA = state.boxStats.get(b.id)?.fga || 0;
-      return aFGA - bFGA;
-    })[0];
-    passBall(state, handler, target);
-    return;
-  }
   
   // 0. COMMITTED DRIVE
   if (handler.isDriving) {
@@ -132,18 +121,7 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
     }
   }
   
-  // Hogging override: 90% pass when hogging
-  if ((isHogging || isHardCapped) && !mustAttack && openTeammates.length > 0 && state.rng() < 0.90) {
-    const target = openTeammates.sort((a, b) => {
-      const aFGA = state.boxStats.get(a.id)?.fga || 0;
-      const bFGA = state.boxStats.get(b.id)?.fga || 0;
-      return aFGA - bFGA;
-    })[0];
-    passBall(state, handler, target);
-    return;
-  }
-  
-  // 2. Wide open catch-and-shoot
+  // 2. Wide open catch-and-shoot — ALWAYS shoot if truly wide open (even if hogging)
   if (isWideOpen && holdTime < 0.5 && distToBasket > 22 && distToBasket < 27) {
     const moreOpenTeammate = openTeammates.find(p => {
       const pDef = findNearestDefender(p, state);
@@ -161,7 +139,8 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
     const three = handler.player.skills.shooting.three_point;
     const bestShootingSkill = Math.max(catchShoot, three);
     if (bestShootingSkill >= 70 || (bestShootingSkill >= 60 && state.rng() < 0.35)) {
-      if (isHogging && openTeammates.length > 0) {
+      if (isHardCapped && openTeammates.length > 0) {
+        // Only pass if HARD capped (>25 FGA), not soft hogging — wide open 3 is too good to pass up
         passBall(state, handler, openTeammates[0]);
         return;
       }
@@ -193,7 +172,7 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   if (!isDecisionTick) return;
   
   // === PASS-FIRST SECTION ===
-  if (passFirst && openTeammates.length > 0 && state.rng() < 0.8) {
+  if (passFirst && openTeammates.length > 0 && state.rng() < 0.65) {
     const superstar = openTeammates.find(p => p.player.isSuperstar);
     if (superstar && state.rng() < 0.5) {
       passBall(state, handler, superstar);
@@ -228,6 +207,20 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
     }
   }
   
+  // Usage balancing — if hogging, prefer to pass (but not 90% forced)
+  if ((isHogging || isHardCapped) && !mustAttack && openTeammates.length > 0) {
+    const passProb = isHardCapped ? 0.85 : 0.65; // hard cap = very likely pass, soft hog = moderate
+    if (state.rng() < passProb) {
+      const target = openTeammates.sort((a, b) => {
+        const aFGA = state.boxStats.get(a.id)?.fga || 0;
+        const bFGA = state.boxStats.get(b.id)?.fga || 0;
+        return aFGA - bFGA; // least used player
+      })[0];
+      passBall(state, handler, target);
+      return;
+    }
+  }
+  
   // 3d. ALLEY-OOP
   if (!mustAttack && handler.player.skills.playmaking.lob_pass >= 65) {
     const oopTarget = findAlleyOopTarget(state, handler, basketPos);
@@ -238,7 +231,8 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   }
   
   // 3. Read the defense — pass hunger
-  const passHunger = Math.min(0.80, 0.30 + Math.max(0, 4 - state.passCount) * 0.15);
+  // passHunger: 0 → 0.55, 1 → 0.40, 2 → 0.25, 3+ → 0.10
+  const passHunger = Math.min(0.55, 0.10 + Math.max(0, 3 - state.passCount) * 0.15);
   
   if (!mustAttack && openTeammates.length > 0 && state.rng() < passHunger) {
     const superstar = openTeammates.find(p => p.player.isSuperstar);

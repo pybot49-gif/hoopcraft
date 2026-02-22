@@ -256,7 +256,7 @@ function handleAdvance(state: GameState, offTeam: SimPlayer[], defTeam: SimPlaye
         : d.pos.x < HALF_X - 25;
     }).length;
     
-    if (defDeepBehind >= 4 && defNotBack >= 2 && !state.hasFastBroken && state.phaseTicks < 20) {
+    if (defDeepBehind >= 3 && defNotBack >= 2 && !state.hasFastBroken && state.phaseTicks < 20) {
       const offPastHalf = offTeam.filter(p => {
         return state.possession === 0
           ? p.pos.x > HALF_X + 5
@@ -341,7 +341,7 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     case 'late': {
       const bestScorer = findBestScorer(offTeam);
       const bestStats = state.boxStats.get(bestScorer.id);
-      const bestHogging = bestStats && teamAvgFGA > 2 && bestStats.fga > teamAvgFGA * 1.3;
+      const bestHogging = bestStats && teamAvgFGA > 4 && bestStats.fga > teamAvgFGA * 1.5;
       if (handler !== bestScorer && checkIfOpen(bestScorer, state) && !bestHogging) {
         passBall(state, handler, bestScorer);
         return;
@@ -381,8 +381,8 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       break;
   }
   
-  // Steal attempts — per-possession check (once every ~2 seconds of action)
-  if (state.phaseTicks % 120 === 60) {
+  // Steal attempts — per-possession check (once every ~3 seconds of action)
+  if (state.phaseTicks % 180 === 60) {
     const nearestDef = findNearestDefender(handler, state);
     if (nearestDef) {
       const defDist = dist(nearestDef.pos, handler.pos);
@@ -408,46 +408,51 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     }
   }
   
-  // Turnover checks — various types
-  if (state.phaseTicks % 120 === 30) {
-    // Offensive foul / charge when driving into set defender
-    if (handler.isDriving) {
-      const nearDef = findNearestDefender(handler, state);
-      if (nearDef && dist(nearDef.pos, handler.pos) < 4) {
-        if (state.rng() < 0.05) {
-          addStat(state, handler.id, 'tov');
-          addStat(state, handler.id, 'pf');
-          state.lastEvent = `Offensive foul! Charge called on ${handler.player.name}!`;
-          changePossession(state, '');
-          return;
-        }
-        // Travel on drive
-        if (state.rng() < 0.015) {
-          addStat(state, handler.id, 'tov');
-          state.lastEvent = `Travel! ${handler.player.name} shuffles his feet!`;
-          changePossession(state, '');
-          return;
-        }
-        // Out of bounds on drive
-        const basket = getTeamBasket(state.possession);
-        if (handler.pos.y < 5 || handler.pos.y > 45) {
-          if (state.rng() < 0.03) {
-            addStat(state, handler.id, 'tov');
-            state.lastEvent = `${handler.player.name} drives out of bounds!`;
-            changePossession(state, '');
-            return;
-          }
-        }
+  // Turnover checks — once per ~3 seconds of action
+  if (state.phaseTicks % 180 === 90) {
+    const nearDef = findNearestDefender(handler, state);
+    const defClose = nearDef && dist(nearDef.pos, handler.pos) < 4;
+    
+    // Driving: chance of charge, travel, or driving foul (→ FTs for defense)
+    if (handler.isDriving && defClose && nearDef) {
+      const roll = state.rng();
+      if (roll < 0.03) {
+        // Charge
+        addStat(state, handler.id, 'tov');
+        addStat(state, handler.id, 'pf');
+        state.lastEvent = `Offensive foul! Charge on ${handler.player.name}!`;
+        changePossession(state, '');
+        return;
+      } else if (roll < 0.04) {
+        // Travel
+        addStat(state, handler.id, 'tov');
+        state.lastEvent = `Travel! ${handler.player.name} shuffles his feet!`;
+        changePossession(state, '');
+        return;
+      } else if (roll < 0.08) {
+        // Driving foul → FTs for the driver (like getting hacked going to basket)
+        addStat(state, nearDef.id, 'pf');
+        const ftCount = dist(handler.pos, getTeamBasket(state.possession)) > 22 ? 3 : 2;
+        clearBallCarrier(state);
+        handler.hasBall = true;
+        state.ball.carrier = handler;
+        handler.isDriving = false;
+        state.ball.inFlight = false;
+        state.ball.isShot = false;
+        state.freeThrows = { shooter: handler, made: 0, total: ftCount, andOne: false };
+        state.phase = 'freethrow';
+        state.phaseTicks = 0;
+        state.currentPlay = null;
+        state.lastEvent = `Driving foul on ${nearDef.player.name}! ${ftCount} free throws!`;
+        return;
       }
     }
-  }
-  
-  // General ball-handling turnover
-  if (state.phaseTicks % 120 === 90) {
+    
+    // General ball-handling error
     const handling = handler.player.skills.playmaking.ball_handling;
-    let toChance = 0.04 - (handling / 100) * 0.02;
+    let toChance = 0.015 - (handling / 100) * 0.01;
     if (handler.fatigue > 0.3) toChance *= 1.3;
-    if (state.rng() < Math.max(0.005, toChance)) {
+    if (state.rng() < Math.max(0.002, toChance)) {
       addStat(state, handler.id, 'tov');
       state.lastEvent = `${handler.player.name} loses the handle!`;
       changePossession(state, '');
@@ -455,26 +460,23 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
     }
   }
   
-  // 3-second violation check
-  if (state.phaseTicks % 180 === 0) {
+  // 3-second violation check — once per ~5 seconds
+  if (state.phaseTicks % 300 === 0 && state.phaseTicks > 0) {
     const basket = getTeamBasket(state.possession);
     for (const p of offTeam) {
       if (p.hasBall) continue;
       const dBasket = dist(p.pos, basket);
-      if (dBasket < 8) {
-        // Rough 3-second check: if they've been close to basket for extended time
-        if (state.rng() < 0.02) {
-          addStat(state, p.id, 'tov');
-          state.lastEvent = `3-second violation on ${p.player.name}!`;
-          changePossession(state, '');
-          return;
-        }
+      if (dBasket < 6 && state.rng() < 0.008) {
+        addStat(state, p.id, 'tov');
+        state.lastEvent = `3-second violation on ${p.player.name}!`;
+        changePossession(state, '');
+        return;
       }
     }
   }
 
-  // Off-ball fouls — can lead to bonus FTs
-  if (state.phaseTicks % 300 === 150) {
+  // Off-ball fouls — can lead to bonus FTs (check every ~3s)
+  if (state.phaseTicks % 180 === 45) {
     const defTeamAll = state.players.filter(p => p.teamIdx !== state.possession);
     // Count team fouls this quarter for bonus
     const teamFouls = defTeamAll.reduce((sum, d) => sum + (state.boxStats.get(d.id)?.pf || 0), 0);
@@ -486,7 +488,11 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       if (state.rng() < 0.08) {
         addStat(state, nearDef.id, 'pf');
         if (inBonus) {
-          // Bonus free throws
+          clearBallCarrier(state);
+          handler.hasBall = true;
+          state.ball.carrier = handler;
+          state.ball.inFlight = false;
+          state.ball.isShot = false;
           state.freeThrows = { shooter: handler, made: 0, total: 2, andOne: false };
           state.phase = 'freethrow';
           state.phaseTicks = 0;
@@ -505,8 +511,12 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
       if (assigned && dist(def.pos, assigned.pos) < 2.5 && state.rng() < 0.04) {
         addStat(state, def.id, 'pf');
         if (inBonus) {
-          // Nearest offensive player shoots FTs
           const ftShooter = handler;
+          clearBallCarrier(state);
+          ftShooter.hasBall = true;
+          state.ball.carrier = ftShooter;
+          state.ball.inFlight = false;
+          state.ball.isShot = false;
           state.freeThrows = { shooter: ftShooter, made: 0, total: 2, andOne: false };
           state.phase = 'freethrow';
           state.phaseTicks = 0;
@@ -555,7 +565,7 @@ export function tick(state: GameState): GameState {
   }
 
   // Update clocks
-  if (state.phase !== 'jumpball' && state.gameStarted) {
+  if (state.phase !== 'jumpball' && state.phase !== 'freethrow' && state.gameStarted) {
     state.clockSeconds -= dt;
     state.shotClock -= dt;
     if (state.phase === 'advance') {

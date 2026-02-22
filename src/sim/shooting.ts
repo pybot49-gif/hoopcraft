@@ -147,23 +147,25 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
     state.ball.missType = null;
   }
   
-  // FOUL CHECK — increased rates for NBA-realistic FTA (~22/team/game)
+  // FOUL CHECK — shooting fouls
   const isFouled = (() => {
-    if (contestDistance > 12) return false;
+    if (contestDistance > 10) return false;
     let foulChance = 0;
-    if (distToBasket < 5) foulChance = 0.30;
-    else if (distToBasket < 10) foulChance = 0.20;
-    else if (distToBasket < 22) foulChance = 0.10;
-    else foulChance = 0.08;
-    if (contestDistance < 3) foulChance *= 1.6;
-    else if (contestDistance < 5) foulChance *= 1.3;
-    else if (contestDistance > 8) foulChance *= 0.4;
-    // Driving to basket = more fouls
-    if (shooter.isDriving && distToBasket < 10) foulChance *= 1.4;
+    if (distToBasket < 5) foulChance = 0.18;
+    else if (distToBasket < 10) foulChance = 0.12;
+    else if (distToBasket < 22) foulChance = 0.06;
+    else foulChance = 0.04;
+    if (contestDistance < 3) foulChance *= 1.5;
+    else if (contestDistance < 5) foulChance *= 1.2;
+    else if (contestDistance > 7) foulChance *= 0.3;
+    if (shooter.isDriving && distToBasket < 10) foulChance *= 1.3;
     return state.rng() < foulChance;
   })();
   
   if (isFouled) {
+    // Reset ball flight — foul stops the shot sequence
+    state.ball.inFlight = false;
+    state.ball.isShot = false;
     const pts = distToBasket > 22 ? 3 : 2;
     if (nearestDef) addStat(state, nearestDef.id, 'pf');
     addStat(state, shooter.id, 'fga');
@@ -173,7 +175,18 @@ export function attemptShot(state: GameState, shooter: SimPlayer, basket: Vec2):
       addStat(state, shooter.id, 'pts', pts);
       if (distToBasket > 22) addStat(state, shooter.id, 'tpm');
       state.score[state.possession] += pts;
-      state.lastEvent = `AND ONE! ${shooterName} scores ${pts} + FT! (${state.score[0]}-${state.score[1]})`;
+      // Assist tracking for and-one
+      let assistStr = '';
+      if (state.lastPassFrom && state.lastPassFrom !== shooter.id &&
+          state.gameTime - state.lastPassTime < 7.0) {
+        const assister = state.players.find(p => p.id === state.lastPassFrom);
+        if (assister) {
+          state.assists[state.possession]++;
+          addStat(state, assister.id, 'ast');
+          assistStr = ` (ast: ${assister.player.name})`;
+        }
+      }
+      state.lastEvent = `AND ONE! ${shooterName} scores ${pts} + FT!${assistStr} (${state.score[0]}-${state.score[1]})`;
       state.freeThrows = { shooter, made: 0, total: 1, andOne: true };
     } else {
       state.lastEvent = `Shooting foul on ${shooterName}! ${pts} free throws`;
