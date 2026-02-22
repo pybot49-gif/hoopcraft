@@ -315,27 +315,31 @@ function handleAction(state: GameState, offTeam: SimPlayer[], defTeam: SimPlayer
   const handler = getBallHandler(state);
   if (!handler) return;
   
+  // Force shot if shot clock low or too many passes, regardless of catchTimer
+  // (catchTimer shouldn't prevent shot when urgent)
+  const teamAvgFGA = offTeam.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
+  
+  // Force shot when shot clock critically low — overrides play
+  if (state.shotClock < 5) {
+    state.currentPlay = null;
+    handler.catchTimer = 0; // Remove catch delay for urgency
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  // Force shot after excessive passes — overrides play (was 7, now 11)
+  if (state.passCount >= 11) {
+    state.currentPlay = null;
+    handler.catchTimer = 0; // Remove catch delay for urgency
+    attemptShot(state, handler, basketPos);
+    return;
+  }
+  
   if (handler.catchTimer > 0) return;
   
   handler.isDribbling = true;
   state.dribbleTime += 1 / 60;
   
   state.possessionStage = getPossessionStage(state.shotClock);
-  
-  const teamAvgFGA = offTeam.reduce((sum, p) => sum + (state.boxStats.get(p.id)?.fga || 0), 0) / 5;
-  
-  // Force shot when shot clock critically low — overrides play
-  if (state.shotClock < 5) {
-    state.currentPlay = null;
-    attemptShot(state, handler, basketPos);
-    return;
-  }
-  // Force shot after excessive passes — overrides play
-  if (state.passCount >= 8) {
-    state.currentPlay = null;
-    attemptShot(state, handler, basketPos);
-    return;
-  }
   
   if (state.currentPlay) {
     updateCurrentPlay(state, basketPos, dir);
@@ -588,6 +592,7 @@ export function tick(state: GameState): GameState {
       ballY: Math.round(state.ball.pos.y * 10) / 10,
       ballInFlight: state.ball.inFlight,
       assists: [...state.assists] as [number, number],
+      passCount: state.passCount,
     });
   }
 

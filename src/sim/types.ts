@@ -182,4 +182,5 @@ export interface TickSnapshot {
   event?: string; play?: string;
   ballX: number; ballY: number; ballInFlight: boolean;
   assists: [number, number];
+  passCount: number;
 }

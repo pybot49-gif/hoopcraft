@@ -119,6 +119,10 @@ const report = await page.evaluate(() => {
   const playCount = {};
   let totalPlays = 0;
   let lastPlay = null;
+  
+  // PassCount tracking
+  let passCountSamples = [];
+  let lastPassCount = 0;
 
   // Event-level tracking
   let passes = 0, steals = 0, turnovers = 0, fastBreaks = 0;
@@ -198,6 +202,12 @@ const report = await page.evaluate(() => {
       playCount[t.play] = (playCount[t.play] || 0) + 1;
     }
     lastPlay = t.play || null;
+
+    // Track passCount distribution
+    if (t.passCount !== undefined && t.passCount !== lastPassCount) {
+      passCountSamples.push(t.passCount);
+      lastPassCount = t.passCount;
+    }
 
     // Assists (from tick data)
     if (t.assists) {
@@ -315,6 +325,14 @@ const report = await page.evaluate(() => {
   const shortPoss = possessionLengths.filter(l => l < 4).length;
   const longPoss = possessionLengths.filter(l => l > 18).length;
 
+  // PassCount distribution analysis
+  const passCountDist = {};
+  for (const pc of passCountSamples) {
+    passCountDist[pc] = (passCountDist[pc] || 0) + 1;
+  }
+  const totalPassCountSamples = passCountSamples.length;
+  const maxPassCount = Math.max(...passCountSamples);
+
   // ══════════════════════════════════════════════════════════════════════
   // FORMAT REPORT
   // ══════════════════════════════════════════════════════════════════════
@@ -345,6 +363,13 @@ const report = await page.evaluate(() => {
   L.push(`│ Assist Rate: ${scores > 0 ? (assists / scores * 100).toFixed(0) : 0}% of scores assisted — NBA avg: ~60-65%`);
   L.push(`│ Fast Breaks: ${fastBreaks}/${totalPossessions} (${pct(fastBreaks, totalPossessions)}%) — NBA avg: 15-20%`);
   L.push(`│ Passes/Possession: ${(passes / totalPossessions).toFixed(1)} — NBA avg: ~4-5 per made basket`);
+  L.push(`│`);
+  L.push(`│ PassCount distribution at decision points:`);
+  for (let i = 0; i <= maxPassCount; i++) {
+    const count = passCountDist[i] || 0;
+    const pct = totalPassCountSamples > 0 ? (count / totalPassCountSamples * 100).toFixed(1) : '0.0';
+    L.push(`│   passCount=${i}: ${rpad(count, 4)} samples (${pct}%)`);
+  }
   L.push(`│`);
   L.push(`│ Pass Types:`);
   for (const [type, count] of Object.entries(passTypes).filter(([,c]) => c > 0).sort((a, b) => b[1] - a[1])) {
