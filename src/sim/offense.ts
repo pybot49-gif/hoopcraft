@@ -40,6 +40,7 @@ export function executeReadAndReact(handler: SimPlayer, state: GameState, basket
   const distToBasket = dist(handler.pos, basketPos);
   const isOpen = checkIfOpen(handler, state);
   const isWideOpen = checkIfWideOpen(handler, state);
+  
   const openTeammates = getOpenTeammates(state, handler);
   const holdTime = state.dribbleTime;
   

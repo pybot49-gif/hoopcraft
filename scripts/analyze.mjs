@@ -50,7 +50,7 @@ await ctx.route('**/*', async (route) => {
 const browserLogs = [];
 page.on('console', msg => {
   const t = msg.text();
-  if (t.includes('[FREEZE]') || t.includes('[SCV]') || t.includes('[BALL]')) {
+  if (t.includes('[FREEZE]') || t.includes('[SCV]') || t.includes('[BALL]') || t.includes('[NO_AST]')) {
     console.log('BROWSER: ' + t);
     browserLogs.push(t);
   }

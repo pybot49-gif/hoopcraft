@@ -540,6 +540,10 @@ export function tick(state: GameState): GameState {
   } else if (state.phase === 'freethrow' && state.phaseTicks > 400) {
     state.freeThrows = null;
     changePossession(state, '');
+  } else if ((state.phase === 'action' || state.phase === 'setup' || state.phase === 'advance' || state.phase === 'inbound') && state.phaseTicks > 1800) {
+    // 1800 ticks = 30 seconds — absolute safety valve for any live-ball phase
+    console.warn(`[FREEZE] phase=${state.phase} stuck for ${state.phaseTicks} ticks, forcing possession change`);
+    changePossession(state, 'Stuck recovery');
   }
 
   // Collect tick data for analysis

@@ -95,6 +95,16 @@ export function updateBallFlight(state: GameState, dt: number): void {
             : shotDistance < 8 ? 'layup' 
             : `${pts}pts`;
           let assistStr = '';
+          // Debug: track assist eligibility
+          const passAge = state.lastPassFrom ? (state.gameTime - state.lastPassTime).toFixed(1) : 'N/A';
+          const isSelfPass = state.lastPassFrom === shooterId;
+          if (!state.lastPassFrom) {
+            console.log(`[NO_AST] No lastPassFrom (passCount=${state.passCount})`);
+          } else if (isSelfPass) {
+            console.log(`[NO_AST] Self-pass`);
+          } else if (state.gameTime - state.lastPassTime >= 7.0) {
+            console.log(`[NO_AST] Pass too old: ${passAge}s`);
+          }
           if (state.lastPassFrom && state.lastPassFrom !== shooterId && 
               state.gameTime - state.lastPassTime < 7.0) {
             const assister = state.players.find(p => p.id === state.lastPassFrom);
